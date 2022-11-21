@@ -229,14 +229,14 @@ impl Dumper {
 
     fn write_mark_bytes(&mut self, len: usize) -> Result<(), Error> {
         self.0.push(Type::Bytes.prefix());
-        let len: u16 = len.try_into()?;
-        self.write_data_short(len as i16)
+        let len: u32 = len.try_into()?;
+        self.write_data_int(len as i32)
     }
 
     fn write_mark_str(&mut self, len: usize) -> Result<(), Error> {
         self.0.push(Type::Str.prefix());
-        let len: u16 = len.try_into()?;
-        self.write_data_short(len as i16)
+        let len: u32 = len.try_into()?;
+        self.write_data_int(len as i32)
     }
 
     fn write_mark_object(&mut self, len: usize) -> Result<(), Error> {
@@ -253,8 +253,8 @@ impl Dumper {
     fn write_mark_array(&mut self, len: usize, mark: impl AsRef<Mark>) -> Result<(), Error> {
         self.0.push(Type::Array.prefix());
         self.write_mark(mark)?;
-        let len: u16 = len.try_into()?;
-        self.write_data_short(len as i16)
+        let len: u32 = len.try_into()?;
+        self.write_data_int(len as i32)
     }
 
     fn write_mark_list(&mut self, size: usize) -> Result<(), Error> {
@@ -270,10 +270,10 @@ impl Dumper {
         val_mark: impl AsRef<Mark>,
     ) -> Result<(), Error> {
         self.0.push(Type::Dict.prefix());
-        let len: u16 = len.try_into()?;
+        let len: u32 = len.try_into()?;
         self.write_mark(key_mark)?;
         self.write_mark(val_mark)?;
-        self.write_data_short(len as i16)
+        self.write_data_int(len as i32)
     }
 
     fn write_mark_map(&mut self, size: usize) -> Result<(), Error> {
@@ -471,7 +471,7 @@ impl Dumper {
 
     /// Write a string of bytes to the dumper.
     ///
-    /// Note: There can be at most 65535 bytes in the bytearray.
+    /// Note: there can be at most 4294967295 bytes (4.29GB) in the bytearray.
     ///
     /// ```
     /// use mbon::dumper::Dumper;
@@ -479,7 +479,7 @@ impl Dumper {
     /// let mut dumper = Dumper::new();
     /// dumper.write_bytes(b"hello").unwrap();
     ///
-    /// assert_eq!(dumper.buffer(), b"b\x00\x05hello");
+    /// assert_eq!(dumper.buffer(), b"b\x00\x00\x00\x05hello");
     /// ```
     pub fn write_bytes(&mut self, val: impl AsRef<[u8]>) -> Result<(), Error> {
         let val = val.as_ref();
@@ -490,7 +490,7 @@ impl Dumper {
 
     /// Write a string to the dumper.
     ///
-    /// Note: There can be at most 65535 bytes in the string.
+    /// Note: there can be at most 4294967295 bytes (4.29GB) in the string.
     ///
     /// ```
     /// use mbon::dumper::Dumper;
@@ -498,7 +498,7 @@ impl Dumper {
     /// let mut dumper = Dumper::new();
     /// dumper.write_str("hello").unwrap();
     ///
-    /// assert_eq!(dumper.buffer(), b"s\x00\x05hello");
+    /// assert_eq!(dumper.buffer(), b"s\x00\x00\x00\x05hello");
     /// ```
     pub fn write_str(&mut self, val: impl AsRef<str>) -> Result<(), Error> {
         let val = val.as_ref();
@@ -570,7 +570,7 @@ impl Dumper {
     /// * An array of fixed size items
     /// * A list of any type of item
     ///
-    /// Note: when the list is stored as an array, there can be at most 65535
+    /// Note: when the list is stored as an array, there can be at most 4294967296
     /// items and when the list is stored as a list, the total size of the data
     /// can be no more than 4294967296 bytes (4.29 GB)
     ///
@@ -587,7 +587,7 @@ impl Dumper {
     ///     Value::Char(0x50)
     /// ]);
     ///
-    /// assert_eq!(dumper.buffer(), b"ac\x00\x05\x10\x20\x30\x40\x50");
+    /// assert_eq!(dumper.buffer(), b"ac\x00\x00\x00\x05\x10\x20\x30\x40\x50");
     ///
     /// let mut dumper = Dumper::new();
     /// dumper.write_list(vec![
@@ -599,7 +599,7 @@ impl Dumper {
     /// ]);
     ///
     /// assert_eq!(dumper.buffer(),
-    /// b"A\x00\x00\x00\x10c\x10c\x20c\x30c\x40s\x00\x05Hello");
+    /// b"A\x00\x00\x00\x12c\x10c\x20c\x30c\x40s\x00\x00\x00\x05Hello");
     /// ```
     pub fn write_list(&mut self, val: impl AsRef<Vec<Value>>) -> Result<(), Error> {
         let val = val.as_ref();
@@ -618,7 +618,7 @@ impl Dumper {
     /// * An dict of fixed size key value pairs
     /// * A map of any type of key value pairs
     ///
-    /// Note: when the map is stored as a dict, there can be at most 65535
+    /// Note: when the map is stored as a dict, there can be at most 4294967296
     /// pairs and when the map is stored as a map, the total size of the data
     /// can be no more than 4294967296 bytes (4.29 GB)
     ///
@@ -634,7 +634,7 @@ impl Dumper {
     /// ]);
     ///
     /// assert_eq!(dumper.buffer(),
-    /// b"ms\x00\x01c\x00\x03a\x10b\x20c\x30");
+    /// b"ms\x00\x00\x00\x01c\x00\x00\x00\x03a\x10b\x20c\x30");
     ///
     /// let mut dumper = Dumper::new();
     /// dumper.write_map(vec![
@@ -644,7 +644,7 @@ impl Dumper {
     /// ]);
     ///
     /// assert_eq!(dumper.buffer(),
-    /// b"M\x00\x00\x00\x13s\x00\x01ac\x10s\x00\x01bc\x20s\x00\x01ch\x00\x30");
+    /// b"M\x00\x00\x00\x19s\x00\x00\x00\x01ac\x10s\x00\x00\x00\x01bc\x20s\x00\x00\x00\x01ch\x00\x30");
     /// ```
     pub fn write_map(&mut self, val: impl AsRef<Vec<(Value, Value)>>) -> Result<(), Error> {
         let val = val.as_ref();
@@ -734,14 +734,14 @@ mod test {
     fn test_bytes() {
         let mut dumper = Dumper::new();
         dumper.write_bytes(b"Hello world!").unwrap();
-        assert_eq!(dumper.0, b"b\x00\x0cHello world!");
+        assert_eq!(dumper.0, b"b\x00\x00\x00\x0cHello world!");
     }
 
     #[test]
     fn test_str() {
         let mut dumper = Dumper::new();
         dumper.write_str("Hello world!").unwrap();
-        assert_eq!(dumper.0, b"s\x00\x0cHello world!");
+        assert_eq!(dumper.0, b"s\x00\x00\x00\x0cHello world!");
     }
 
     #[test]
@@ -776,7 +776,7 @@ mod test {
             Value::Char(5),
         ];
         dumper.write_list(&value).unwrap();
-        assert_eq!(dumper.0, b"ac\x00\x05\x01\x02\x03\x04\x05");
+        assert_eq!(dumper.0, b"ac\x00\x00\x00\x05\x01\x02\x03\x04\x05");
     }
 
     #[test]
@@ -788,7 +788,7 @@ mod test {
             Value::Object(b"i\x00\x00\x00\x42c\x03".to_vec()),
         ];
         dumper.write_list(&value).unwrap();
-        assert_eq!(dumper.0, b"ao\x00\x00\x00\x07\x00\x03i\x00\x00\x00\x69c\x01i\x00\x00\x00\x10c\x02i\x00\x00\x00\x42c\x03")
+        assert_eq!(dumper.0, b"ao\x00\x00\x00\x07\x00\x00\x00\x03i\x00\x00\x00\x69c\x01i\x00\x00\x00\x10c\x02i\x00\x00\x00\x42c\x03")
     }
 
     #[test]
@@ -812,7 +812,7 @@ mod test {
             Value::Object(b"i\x00\x00\x00\x42c\x03".to_vec()),
         ];
         dumper.write_list(&value).unwrap();
-        assert_eq!(dumper.0, b"A\x00\x00\x00\x22o\x00\x00\x00\x07i\x00\x00\x00\x69c\x01b\x00\x07i\x00\x00\x00\x10c\x02o\x00\x00\x00\x07i\x00\x00\x00\x42c\x03")
+        assert_eq!(dumper.0, b"A\x00\x00\x00\x24o\x00\x00\x00\x07i\x00\x00\x00\x69c\x01b\x00\x00\x00\x07i\x00\x00\x00\x10c\x02o\x00\x00\x00\x07i\x00\x00\x00\x42c\x03")
     }
 
     #[test]
@@ -846,7 +846,7 @@ mod test {
 
         assert_eq!(
             dumper.0,
-            b"aac\x00\x05\x00\x03\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f"
+            b"aac\x00\x00\x00\x05\x00\x00\x00\x03\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f"
         )
     }
 
@@ -863,7 +863,7 @@ mod test {
         dumper.write_list(&value).unwrap();
         assert_eq!(
             dumper.0,
-            b"A\x00\x00\x00\x10s\x00\x05Helloc\x02c\x03c\x04c\x05"
+            b"A\x00\x00\x00\x12s\x00\x00\x00\x05Helloc\x02c\x03c\x04c\x05"
         );
     }
 
@@ -877,7 +877,7 @@ mod test {
         dumper.write_map(&value).unwrap();
         assert_eq!(
             dumper.0,
-            b"M\x00\x00\x00\x0ds\x00\x01ac\x02s\x00\x01bh\x00\x05"
+            b"M\x00\x00\x00\x11s\x00\x00\x00\x01ac\x02s\x00\x00\x00\x01bh\x00\x05"
         );
     }
 
@@ -889,6 +889,6 @@ mod test {
             (Value::Str("b".into()), Value::Char(5)),
         ];
         dumper.write_map(&value).unwrap();
-        assert_eq!(dumper.0, b"ms\x00\x01c\x00\x02a\x02b\x05");
+        assert_eq!(dumper.0, b"ms\x00\x00\x00\x01c\x00\x00\x00\x02a\x02b\x05");
     }
 }

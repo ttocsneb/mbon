@@ -6,13 +6,18 @@ use crate::data::Type;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// The base error type for mbon
 #[derive(Debug)]
 pub enum Error {
+    /// A type was expected, but a different one was found
     Expected(Type),
+    /// There was a problem with the provided data
     DataError(String),
+    /// There is no more data left, but more was expected
     EndOfFile,
+    /// There was a problem reading the data
     IO(io::Error),
-    Nested(Box<dyn std::error::Error>),
+    /// There was a problem on the user's end
     Msg(String),
 }
 
@@ -21,9 +26,8 @@ impl Display for Error {
         match self {
             Error::Expected(t) => f.write_fmt(format_args!("Expected {}", t)),
             Error::DataError(t) => f.write_fmt(format_args!("Data Error: {}", t)),
-            Error::EndOfFile => f.write_str("End Of File"),
+            Error::EndOfFile => f.write_str("More data was expected"),
             Error::IO(err) => err.fmt(f),
-            Error::Nested(err) => err.fmt(f),
             Error::Msg(msg) => f.write_str(msg),
         }
     }
@@ -31,18 +35,23 @@ impl Display for Error {
 
 impl Error {
     #[inline]
-    pub fn data_error(s: impl Into<String>) -> Self {
-        Self::DataError(s.into())
+    pub fn data_error(s: impl Display) -> Self {
+        Self::DataError(s.to_string())
+    }
+
+    #[inline]
+    pub fn msg(s: impl Display) -> Self {
+        Self::Msg(s.to_string())
     }
 
     #[inline]
     pub fn from_error<E: std::error::Error + 'static>(err: E) -> Self {
-        Self::Nested(Box::new(err))
+        Self::msg(err)
     }
 
     #[inline]
     pub fn from_box(err: Box<dyn std::error::Error>) -> Self {
-        Self::Nested(err)
+        Self::msg(err)
     }
 
     pub fn from_res<T, E>(res: std::result::Result<T, E>) -> Result<T>
@@ -70,7 +79,7 @@ impl ser::Error for Error {
     where
         T: Display,
     {
-        Self::Msg(format!("{}", msg))
+        Self::msg(msg)
     }
 }
 impl de::Error for Error {
@@ -78,7 +87,7 @@ impl de::Error for Error {
     where
         T: Display,
     {
-        Self::Msg(format!("{}", msg))
+        Self::msg(msg)
     }
 }
 
@@ -89,16 +98,16 @@ impl From<std::io::Error> for Error {
 }
 impl From<Utf8Error> for Error {
     fn from(err: Utf8Error) -> Self {
-        Self::DataError(format!("{}", err))
+        Self::data_error(err)
     }
 }
 impl From<FromUtf8Error> for Error {
     fn from(err: FromUtf8Error) -> Self {
-        Self::DataError(format!("{}", err))
+        Self::data_error(err)
     }
 }
 impl From<TryFromIntError> for Error {
     fn from(err: TryFromIntError) -> Self {
-        Self::DataError(format!("{}", err))
+        Self::data_error(err)
     }
 }

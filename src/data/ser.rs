@@ -403,7 +403,7 @@ mod test {
 
         let mut dumper = Dumper::new();
         dumper.write(&arr).unwrap();
-        assert_eq!(dumper.buffer(), b"ac\x00\x04\x00\x01\x02\x03");
+        assert_eq!(dumper.buffer(), b"ac\x00\x00\x00\x04\x00\x01\x02\x03");
     }
 
     #[test]
@@ -416,7 +416,7 @@ mod test {
 
         let mut dumper = Dumper::new();
         dumper.write(&data).unwrap();
-        assert_eq!(dumper.buffer(), b"M\x00\x00\x00\x21s\x00\x01ai\x00\x00\x00\x01s\x00\x01bs\x00\x0bHello Worlds\x00\x01cc\x01");
+        assert_eq!(dumper.buffer(), b"M\x00\x00\x00\x29s\x00\x00\x00\x01ai\x00\x00\x00\x01s\x00\x00\x00\x01bs\x00\x00\x00\x0bHello Worlds\x00\x00\x00\x01cc\x01");
     }
 
     #[test]
@@ -425,7 +425,7 @@ mod test {
         let cheese = Bar::Cheese(16);
         let hello = Bar::Hello { a: 16 };
 
-        let expected = b"en\x00\x00\x00\x00ec\x00\x00\x00\x01\x10ems\x00\x01i\x00\x01\x00\x00\x00\x02a\x00\x00\x00\x10";
+        let expected = b"en\x00\x00\x00\x00ec\x00\x00\x00\x01\x10ems\x00\x00\x00\x01i\x00\x00\x00\x01\x00\x00\x00\x02a\x00\x00\x00\x10";
 
         let mut dumper = Dumper::new();
         dumper.write(&foo).unwrap();

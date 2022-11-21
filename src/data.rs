@@ -149,7 +149,7 @@ impl Value {
     ///     }
     /// }
     ///
-    /// let val = Value::Object(b"i\x00\x00\x32\x40s\x00\x05Hello".to_vec());
+    /// let val = Value::Object(b"i\x00\x00\x32\x40s\x00\x00\x00\x05Hello".to_vec());
     /// let foo: Foo = val.parse_obj().unwrap();
     ///
     /// assert_eq!(foo.a, 0x3240);
@@ -195,7 +195,7 @@ impl Value {
     /// let val = Value::dump_obj(foo).unwrap();
     ///
     /// if let Value::Object(v) = val {
-    ///     assert_eq!(v, b"i\x00\x00\x32\x40s\x00\x05Hello");
+    ///     assert_eq!(v, b"i\x00\x00\x32\x40s\x00\x00\x00\x05Hello");
     /// } else {
     ///     panic!("val is not an Object");
     /// }
@@ -313,19 +313,11 @@ impl Value {
         if let Some((first_k, first_v)) = iter.next() {
             let key_mark: Mark = first_k.into();
             let val_mark: Mark = first_v.into();
-            let key_type = key_mark.get_type();
-            let key_size = key_mark.data_size();
-            let val_type = val_mark.get_type();
-            let val_size = val_mark.data_size();
 
             for (k, v) in iter {
                 let km: Mark = k.into();
                 let vm: Mark = v.into();
-                if km.get_type() != key_type
-                    || km.data_size() != key_size
-                    || vm.get_type() != val_type
-                    || vm.data_size() != val_size
-                {
+                if km != key_mark || vm != val_mark {
                     return false;
                 }
             }
@@ -377,14 +369,14 @@ impl Mark {
             Mark::Char => 1,
             Mark::Float => 1,
             Mark::Double => 1,
-            Mark::Bytes(_) => 3,
-            Mark::Str(_) => 3,
+            Mark::Bytes(_) => 5,
+            Mark::Str(_) => 5,
             Mark::Object(_) => 5,
             Mark::Enum(m) => 1 + m.mark_size(),
             Mark::Null => 1,
-            Mark::Array(_, m) => 1 + m.mark_size(),
+            Mark::Array(_, m) => 5 + m.mark_size(),
             Mark::List(_) => 5,
-            Mark::Dict(_, k, v) => 1 + k.mark_size() + v.mark_size(),
+            Mark::Dict(_, k, v) => 5 + k.mark_size() + v.mark_size(),
             Mark::Map(_) => 5,
         }
     }

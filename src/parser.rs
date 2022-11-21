@@ -75,7 +75,7 @@ impl<'a> Parser<'a> {
     ///
     /// let mut parser =
     /// Parser::new(
-    ///     b"o\x00\x00\x00\x12i\x00\x00\x00\x42s\x00\x05Hellof\x00\x00\x00\x00"
+    ///     b"o\x00\x00\x00\x14i\x00\x00\x00\x42s\x00\x00\x00\x05Hellof\x00\x00\x00\x00"
     /// );
     ///
     /// let foo: Foo = parser.next_obj().unwrap();
@@ -266,21 +266,21 @@ impl<'a> Parser<'a> {
             Type::Char => Mark::Char,
             Type::Float => Mark::Float,
             Type::Double => Mark::Double,
-            Type::Bytes => Mark::Bytes(self.next_data_short()? as usize),
-            Type::Str => Mark::Str(self.next_data_short()? as usize),
+            Type::Bytes => Mark::Bytes(self.next_data_int()? as usize),
+            Type::Str => Mark::Str(self.next_data_int()? as usize),
             Type::Object => Mark::Object(self.next_data_int()? as usize),
             Type::Enum => Mark::Enum(Box::new(self.next_mark()?)),
             Type::Null => Mark::Null,
             Type::Array => {
                 let mark = self.next_mark()?;
-                let len = self.next_data_short()? as usize;
+                let len = self.next_data_int()? as usize;
                 Mark::Array(len, Box::new(mark))
             }
             Type::List => Mark::List(self.next_data_int()? as usize),
             Type::Dict => {
                 let k = self.next_mark()?;
                 let v = self.next_mark()?;
-                let len = self.next_data_short()? as usize;
+                let len = self.next_data_int()? as usize;
                 Mark::Dict(len, Box::new(k), Box::new(v))
             }
             Type::Map => Mark::Map(self.next_data_int()? as usize),
@@ -296,7 +296,7 @@ impl<'a> Parser<'a> {
     /// use mbon::parser::Parser;
     ///
     /// let mut parser = Parser::new(
-    ///     b"s\x00\x1eI don't care about this stringi\x00\x00\x00\x42"
+    ///     b"s\x00\x00\x00\x1eI don't care about this stringi\x00\x00\x00\x42"
     /// );
     ///
     /// parser.skip_next().unwrap();
@@ -393,7 +393,7 @@ mod test {
 
     #[test]
     fn test_bytes() {
-        let mut parser = Parser::new(b"b\x00\x0bHello World");
+        let mut parser = Parser::new(b"b\x00\x00\x00\x0bHello World");
         let val = parser.next_value().unwrap();
         assert_eq!(val, Value::Bytes(b"Hello World".to_vec()));
         assert_eq!(parser.0.is_empty(), true);
@@ -401,7 +401,7 @@ mod test {
 
     #[test]
     fn test_str() {
-        let mut parser = Parser::new(b"s\x00\x0bHello World");
+        let mut parser = Parser::new(b"s\x00\x00\x00\x0bHello World");
         let val = parser.next_value().unwrap();
         assert_eq!(val, Value::Str("Hello World".to_owned()));
         assert_eq!(parser.0.is_empty(), true);
@@ -433,7 +433,7 @@ mod test {
 
     #[test]
     fn test_array() {
-        let mut parser = Parser::new(b"ac\x00\x04\x01\x02\x03\x04");
+        let mut parser = Parser::new(b"ac\x00\x00\x00\x04\x01\x02\x03\x04");
         let val = parser.next_value().unwrap();
         if let Value::List(val) = val {
             assert_eq!(val.len(), 4);
@@ -450,7 +450,7 @@ mod test {
     #[test]
     fn test_2d_array() {
         let mut parser = Parser::new(
-            b"aac\x00\x05\x00\x03\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f",
+            b"aac\x00\x00\x00\x05\x00\x00\x00\x03\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f",
         );
         let val = parser.next_value().unwrap();
         if let Value::List(val) = val {
@@ -488,7 +488,8 @@ mod test {
 
     #[test]
     fn test_map() {
-        let mut parser = Parser::new(b"M\x00\x00\x00\x0cs\x00\x01ac\x01s\x00\x01bc\x02");
+        let mut parser =
+            Parser::new(b"M\x00\x00\x00\x10s\x00\x00\x00\x01ac\x01s\x00\x00\x00\x01bc\x02");
         let val = parser.next_value().unwrap();
         if let Value::Map(val) = val {
             assert_eq!(val.len(), 2);
@@ -504,5 +505,16 @@ mod test {
             panic!("value is not a map");
         }
         assert_eq!(parser.0.is_empty(), true);
+    }
+
+    #[test]
+    fn test_eof() {
+        let mut parser = Parser::new(b"i\x00\x0a");
+
+        let err = parser.next_value().expect_err("EndOfFile Error");
+        if let Error::EndOfFile = err {
+        } else {
+            panic!("Expected EndOfFile Error");
+        }
     }
 }

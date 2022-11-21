@@ -1,10 +1,17 @@
-/// mbon is a binary file encoding that is inspired by the NBT
-/// format.
+/// # Marked Binary Object Notation
+///
+/// mbon is a binary notation that is inspired by the NBT format.
 ///
 /// It is formed of a sequence of strongly typed values. Each made up of two
 /// parts: a mark which defines the type and size of the data, followed by the
-/// data. Marks can be different in size and so a single byte is used to
+/// data. Marks can be different in size and so a single byte prefix is used to
 /// differenciate between types.
+///
+/// This format is self-describing which means that it is able to know if the
+/// data is not formatted correctly or a different type was stored than what
+/// was expected. Another feature of the self-describing nature of the format
+/// is that you can skip values in the data without the need to parse the complete
+/// item, e.g. A 1GB value can be easily skipped by only reading the mark.
 ///
 /// ## Usage
 ///
@@ -26,7 +33,7 @@
 /// dumper.write(&c).unwrap();
 ///
 /// let output = dumper.into_buffer();
-/// assert_eq!(output, b"i\x00\x00\x00\x20s\x00\x0bHello Worldca");
+/// assert_eq!(output, b"i\x00\x00\x00\x20s\x00\x00\x00\x0bHello Worldca");
 /// ```
 ///
 /// ### Parsing
@@ -38,7 +45,7 @@
 /// use mbon::parser::Parser;
 /// use mbon::data::Value;
 ///
-/// let data = b"i\x00\x00\x00\x20s\x00\x0bHello Worldca";
+/// let data = b"i\x00\x00\x00\x20s\x00\x00\x00\x0bHello Worldca";
 ///
 /// let mut parser = Parser::new(data);
 ///
@@ -135,13 +142,13 @@
 /// Mfloat  ::= b'f';
 /// Mdouble ::= b'd';
 /// Mnull   ::= b'n';
-/// Mbytes  ::= b'b' [u16];
-/// Mstr    ::= b's' [u16];
+/// Mbytes  ::= b'b' [u32];
+/// Mstr    ::= b's' [u32];
 /// Mobject ::= b'o' [u32];
-/// Menum   ::= b'e' Mark#value;
-/// Marray  ::= b'a' Mark#item [u16];
+/// Menum   ::= b'e' Mark#enum;
+/// Marray  ::= b'a' Mark#item [u32];
 /// Mlist   ::= b'A' [u32];
-/// Mdict   ::= b'm' Mark#key Mark#value [u16];
+/// Mdict   ::= b'm' Mark#key Mark#value [u32];
 /// Mmap    ::= b'M' [u32];
 ///
 /// Dlong   ::= [i64];
@@ -154,7 +161,7 @@
 /// Dbytes  ::= [byte array];
 /// Dstr    ::= [UTF-8 string];
 /// Dobject ::= [byte array];
-/// Denum   ::= [u32] Data#value;
+/// Denum   ::= [u32] Data#enum;
 /// Darray  ::= Data#item Darray |;
 /// Dlist   ::= Value Dlist |;
 /// Ddict   ::= Data#key Data#value Ddict |;
@@ -176,6 +183,9 @@
 /// dict   ::= Mdict Ddict;
 /// map    ::= Mmap Dmap;
 /// ```
+///
+/// > `X#name` means that it is related to any other `Y#name`, e.g. `Mark#item`
+/// > in `Marray` relates to `Data#item`.
 ///
 /// ## Specification
 ///
@@ -200,7 +210,7 @@
 /// ### Numbers
 ///
 /// Every number is defined only by their mark. There is no additional data
-/// stored in an number's mark.
+/// stored in a number's mark.
 ///
 /// All numbers are stored in a big endian binary form. Integers are internally
 /// considered signed, however, there is no requirement that they need to be
@@ -208,11 +218,10 @@
 ///
 /// ### Strings
 ///
-/// Strings will store their type marker followed by a u16 for their length e.g.
-/// `b"s\x00\x05"` would indicate a string that is 5 bytes long.
-///
-/// Because of the size indicator, all strings can be no more than 65535 bytes
-/// long.
+/// Strings will store their type marker followed by a u32 for their length e.g.
+/// `b"s\x00\x00\x00\x05"` would indicate a string that is 5 bytes long. Strings
+/// must be UTF-8 encoded; If you do not want this behaviour, you can use Bytes
+/// which behave in the same way as Str, but without the UTF-8 requirement.
 ///
 /// ### Object
 ///
@@ -248,8 +257,8 @@
 /// ### List
 ///
 /// The list is the more lenient way to store sequences. It simply holds a
-/// sequence of all the items. The mark simply holds the number of bytes in the
-/// list as a u32.
+/// sequence of all the items. The mark of a list simply holds the number of
+/// bytes in the list as a u32.
 ///
 /// ### Dict
 ///

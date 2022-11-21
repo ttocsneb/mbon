@@ -115,7 +115,7 @@ mod test {
     #[test]
     fn test_deserialize() {
         let data =
-            b"o\x00\x00\x00\x25s\x00\x0bHello Worldi\x00\x00\x40\x30A\x00\x00\x00\x0ds\x00\x04Yeets\x00\x03Bar";
+            b"o\x00\x00\x00\x2bs\x00\x00\x00\x0bHello Worldi\x00\x00\x40\x30A\x00\x00\x00\x11s\x00\x00\x00\x04Yeets\x00\x00\x00\x03Bar";
 
         let mut parser = Parser::new(data);
         let test: TestStruct = parser.next_obj().unwrap();
@@ -132,7 +132,7 @@ mod test {
     #[test]
     fn test_serialize() {
         let data =
-            b"o\x00\x00\x00\x25s\x00\x0bHello Worldi\x00\x00\x40\x30A\x00\x00\x00\x0ds\x00\x04Yeets\x00\x03Bar";
+            b"o\x00\x00\x00\x2bs\x00\x00\x00\x0bHello Worldi\x00\x00\x40\x30A\x00\x00\x00\x11s\x00\x00\x00\x04Yeets\x00\x00\x00\x03Bar";
 
         let mut dumper = Dumper::new();
         dumper
