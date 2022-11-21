@@ -127,7 +127,7 @@
 /// Below is a grammar for the binary format. Note that all numbers are stored
 /// in big-endian form.
 ///
-/// ```bnf
+/// ```EBNF
 /// Value  ::= long | int | short | char | float | double | null | bytes
 ///          | str | object | enum | array | list | dict | map;
 /// Mark   ::= Mlong | Mint | Mshort | Mchar | Mfloat | Mdouble | Mnull
@@ -135,33 +135,42 @@
 /// Data   ::= Dlong | Dint | Dshort | Dchar | Dfloat | Ddouble | Dnull
 ///          | Dbytes | Dstr | Dobject | Denum | Darray | Dlist | Ddict | Dmap;
 ///
-/// Mlong   ::= b'l';
-/// Mint    ::= b'i';
-/// Mshort  ::= b'h';
-/// Mchar   ::= b'c';
-/// Mfloat  ::= b'f';
-/// Mdouble ::= b'd';
-/// Mnull   ::= b'n';
-/// Mbytes  ::= b'b' [u32];
-/// Mstr    ::= b's' [u32];
-/// Mobject ::= b'o' [u32];
-/// Menum   ::= b'e' Mark#enum;
-/// Marray  ::= b'a' Mark#item [u32];
-/// Mlist   ::= b'A' [u32];
-/// Mdict   ::= b'm' Mark#key Mark#value [u32];
-/// Mmap    ::= b'M' [u32];
+/// u32 ::= <u8> <u8> <u8> <u8>;
+/// i64 ::= <u8> <u8> <u8> <u8> <u8> <u8> <u8> <u8>;
+/// i32 ::= <u8> <u8> <u8> <u8>;
+/// i16 ::= <u8> <u8>;
+/// i8  ::= <u8>;
+/// f64 ::= <u8> <u8> <u8> <u8> <u8> <u8> <u8> <u8>;
+/// f32 ::= <u8> <u8> <u8> <u8>;
 ///
-/// Dlong   ::= [i64];
-/// Dint    ::= [i32];
-/// Dshort  ::= [i16];
-/// Dchar   ::= [i8];
-/// Dfloat  ::= [f32];
-/// Ddouble ::= [f64];
+///
+/// Mlong   ::= 'l';
+/// Mint    ::= 'i';
+/// Mshort  ::= 'h';
+/// Mchar   ::= 'c';
+/// Mfloat  ::= 'f';
+/// Mdouble ::= 'd';
+/// Mnull   ::= 'n';
+/// Mbytes  ::= 'b' u32;
+/// Mstr    ::= 's' u32;
+/// Mobject ::= 'o' u32;
+/// Menum   ::= 'e' Mark#enum;
+/// Marray  ::= 'a' Mark#item u32;
+/// Mlist   ::= 'A' u32;
+/// Mdict   ::= 'm' Mark#key Mark#value u32;
+/// Mmap    ::= 'M' u32;
+///
+/// Dlong   ::= i64;
+/// Dint    ::= i32;
+/// Dshort  ::= i16;
+/// Dchar   ::= i8;
+/// Dfloat  ::= f32;
+/// Ddouble ::= f64;
 /// Dnull   ::= ;
-/// Dbytes  ::= [byte array];
-/// Dstr    ::= [UTF-8 string];
-/// Dobject ::= [byte array];
-/// Denum   ::= [u32] Data#enum;
+/// Dbytes  ::= u8 Dbytes |;
+/// Dstr    ::= u8 Dbytes |;
+/// Dobject ::= u8 Dbytes |;
+/// Denum   ::= u32 Data#enum;
 /// Darray  ::= Data#item Darray |;
 /// Dlist   ::= Value Dlist |;
 /// Ddict   ::= Data#key Data#value Ddict |;
