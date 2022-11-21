@@ -2,9 +2,20 @@
 name = "mbon"
 version = "0.1.0"
 edition = "2021"
+authors = ["Benjamin Jacobs <benjammin1100@gmail.com>"]
+description = "A serializer/deserializer for marked binary object notation"
+license = "MIT"
+
+readme = "readme.md"
+repository = "https://github.com/ttocsneb/mbon"
+categories = ["parsing"]
+keywords = ["binary", "serde"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-serde = {version = "1.0", features = ["derive"] }
+serde = "1.0"
 byteorder = "1.4"
+
+[dev-dependencies]
+serde = {version = "1.0", features = ["derive"] }
