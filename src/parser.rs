@@ -1,3 +1,7 @@
+//! # Parse mbon data
+//!
+//! Use [Parser] to deserialize mbon data.
+
 use core::str;
 
 use crate::{

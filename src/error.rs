@@ -1,3 +1,5 @@
+//! # Errors used by mbon
+
 use std::{fmt::Display, io, num::TryFromIntError, str::Utf8Error, string::FromUtf8Error};
 
 use serde::{de, ser};

@@ -17,8 +17,10 @@ item, e.g. A 1GB value can be easily skipped by only reading the mark.
 
 ### Dumping
 
-You can dump binary data using the Dumper struct. You can write values
+You can dump binary data using the [Dumper] struct. You can write values
 directly or use serde's serialize to write more complex data.
+
+[Dumper]: https://docs.rs/mbon/0.1.0/mbon/dumper/struct.Dumper.html
 
 ```rust
 use mbon::dumper::Dumper;
@@ -38,8 +40,10 @@ assert_eq!(output, b"i\x00\x00\x00\x20s\x00\x00\x00\x0bHello Worldca");
 
 ### Parsing
 
-You can parse binary data using the Parser struct. You can parse Value's
+You can parse binary data using the [Parser] struct. You can parse Value's
 directly, but it is recommended to use serde to parse data.
+
+[Parser]: https://docs.rs/mbon/0.1.0/mbon/parser/struct.Parser.html
 
 ```rust
 use mbon::parser::Parser;
@@ -66,8 +70,11 @@ assert_eq!(c, b'a');
 ### Embedded Objects
 
 If you are wanting to embed a predefined object inside the format, you can
-impl ObjectDump/ObjectParse. Keep in mind that you will need to call
+impl [ObjectDump]/[ObjectParse]. Keep in mind that you will need to call
 write_obj/parse_obj to take advantage of it.
+
+[ObjectDump]: https://docs.rs/mbon/0.1.0/mbon/object/trait.ObjectDump.html
+[ObjectParse]: https://docs.rs/mbon/0.1.0/mbon/object/trait.ObjectParse.html
 
 ```rust
 use mbon::parser::Parser;
@@ -281,4 +288,3 @@ the number of items in the dict.
 
 The map, similar to the list stores any value types, but in a key-value
 format. This is the fallback format if a value cannot be stored as a dict.
-

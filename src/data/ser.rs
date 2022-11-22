@@ -1,3 +1,7 @@
+//! # Serde Serializer implementation for [Value]
+//!
+//! [Value]: mbon::data::Value
+
 use crate::error::Error;
 
 use super::Value;

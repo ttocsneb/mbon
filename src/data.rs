@@ -1,3 +1,7 @@
+//! Internal data structs
+//!
+//! Here, you'll find [Value], [Mark], and [Type].
+
 use std::fmt::Display;
 
 use serde::{Deserialize, Serialize};

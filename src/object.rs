@@ -1,3 +1,8 @@
+//! # Custom Object parsing and dumping
+//!
+//! You can implement [ObjectParse] and [ObjectDump] to allow for custom object
+//! dumping and parsing.
+
 /// A loader that can load a struct from a binary object.
 ///
 /// A possible use case is to store a struct more efficiently than a map

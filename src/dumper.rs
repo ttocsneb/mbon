@@ -1,3 +1,7 @@
+//! # Dump mbon data
+//!
+//! Use [Dumper] to serialize mbon data.
+
 use byteorder::{BigEndian, WriteBytesExt};
 use serde::Serialize;
 
