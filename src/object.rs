@@ -122,7 +122,7 @@ mod test {
         let data =
             b"o\x00\x00\x00\x2bs\x00\x00\x00\x0bHello Worldi\x00\x00\x40\x30A\x00\x00\x00\x11s\x00\x00\x00\x04Yeets\x00\x00\x00\x03Bar";
 
-        let mut parser = Parser::new(data);
+        let mut parser = Parser::from(data);
         let test: TestStruct = parser.next_obj().unwrap();
         assert_eq!(
             test,

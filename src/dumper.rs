@@ -13,26 +13,27 @@ use crate::{
 
 /// A struct that writes binary data to a bytes buffer.
 ///
-/// You can either write data directly using
-/// * `write_long`
-/// * `write_int`
-/// * `write_short`
-/// * `write_char`
-/// * `write_float`
-/// * `write_double`
-/// * `write_str`
-/// * `write_bytes`
-/// * `write_object`
-/// * `write_enum`
-/// * `write_list`
-/// * `write_map`
 ///
-/// Or you can write data that can be serialized using
-/// * `write`
-/// * `write_obj`
+/// You can either write data that can be serialized using
+/// * [`write()`](Dumper::write)
+/// * [`write_obj()`](Dumper::write_obj)
+///
+/// Or you can write data directly using
+/// * [`write_long()`](Dumper::write_long)
+/// * [`write_int()`](Dumper::write_int)
+/// * [`write_short()`](Dumper::write_short)
+/// * [`write_char()`](Dumper::write_char)
+/// * [`write_float()`](Dumper::write_float)
+/// * [`write_double()`](Dumper::write_double)
+/// * [`write_str()`](Dumper::write_str)
+/// * [`write_bytes()`](Dumper::write_bytes)
+/// * [`write_object()`](Dumper::write_object)
+/// * [`write_enum()`](Dumper::write_enum)
+/// * [`write_list()`](Dumper::write_list)
+/// * [`write_map()`](Dumper::write_map)
 ///
 /// When you are finished writing to the dumper, you can get the buffer using
-/// `buffer` or `into_buffer`
+/// [`buffer()`](Dumper::buffer) or [`into_buffer()`](Dumper::into_buffer).
 pub struct Dumper(Vec<u8>);
 
 impl From<Dumper> for Vec<u8> {

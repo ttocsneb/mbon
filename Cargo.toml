@@ -1,6 +1,6 @@
 [package]
 name = "mbon"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 authors = ["Benjamin Jacobs <benjammin1100@gmail.com>"]
 description = "A serializer/deserializer for marked binary object notation"

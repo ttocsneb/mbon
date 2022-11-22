@@ -550,14 +550,14 @@ mod test {
 
     #[test]
     fn test_vec() {
-        let mut parser = Parser::new(b"ac\x00\x00\x00\x04\x00\x01\x02\x03");
+        let mut parser = Parser::from(b"ac\x00\x00\x00\x04\x00\x01\x02\x03");
         let arr: Vec<u8> = parser.next().unwrap();
         assert_eq!(arr, vec![0, 1, 2, 3]);
     }
 
     #[test]
     fn test_struct() {
-        let mut parser = Parser::new(b"M\x00\x00\x00\x29s\x00\x00\x00\x01ai\x00\x00\x00\x01s\x00\x00\x00\x01bs\x00\x00\x00\x0bHello Worlds\x00\x00\x00\x01cc\x01");
+        let mut parser = Parser::from(b"M\x00\x00\x00\x29s\x00\x00\x00\x01ai\x00\x00\x00\x01s\x00\x00\x00\x01bs\x00\x00\x00\x0bHello Worlds\x00\x00\x00\x01cc\x01");
         let arr: Foo = parser.next().unwrap();
         assert_eq!(
             arr,
@@ -573,7 +573,7 @@ mod test {
     fn test_enum() {
         let data = b"en\x00\x00\x00\x00ec\x00\x00\x00\x01\x10eM\x00\x00\x00\x0b\x00\x00\x00\x02s\x00\x00\x00\x01ai\x00\x00\x00\x10";
 
-        let mut parser = Parser::new(data);
+        let mut parser = Parser::from(data);
 
         let foo: Bar = parser.next().unwrap();
         assert_eq!(foo, Bar::Foo);
@@ -587,7 +587,7 @@ mod test {
 
     #[test]
     fn test_expected() {
-        let mut parser = Parser::new(b"s\x00\x00\x00\x02hi");
+        let mut parser = Parser::from(b"s\x00\x00\x00\x02hi");
 
         let err = parser.next::<i32>().expect_err("Error::Expected");
         if let Error::Expected(_) = err {
@@ -598,7 +598,7 @@ mod test {
 
     #[test]
     fn test_int_coersion() {
-        let mut parser = Parser::new(b"c\x32");
+        let mut parser = Parser::from(b"c\x32");
 
         let val: i32 = parser.next().unwrap();
         assert_eq!(val, 0x32);
@@ -606,7 +606,7 @@ mod test {
 
     #[test]
     fn test_bad_int_coersion() {
-        let mut parser = Parser::new(b"i\x40\x00\x00\x00");
+        let mut parser = Parser::from(b"i\x40\x00\x00\x00");
 
         let err = parser.next::<i16>().expect_err("TryFromIntError");
         if let Error::DataError(_) = err {
@@ -617,7 +617,7 @@ mod test {
 
     #[test]
     fn test_big_int_coersion() {
-        let mut parser = Parser::new(b"i\x00\x00\x00\x40");
+        let mut parser = Parser::from(b"i\x00\x00\x00\x40");
 
         let val: u8 = parser.next().unwrap();
         assert_eq!(val, 0x40);
