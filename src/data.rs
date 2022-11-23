@@ -7,7 +7,7 @@ use std::fmt::Display;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    error::Error,
+    error::{Error, Result},
     object::{ObjectDump, ObjectParse},
 };
 
@@ -97,7 +97,7 @@ impl Value {
     /// assert_eq!(foo, 345);
     /// ```
     #[inline]
-    pub fn parse<'t, T>(&'t self) -> Result<T, Error>
+    pub fn parse<'t, T>(&'t self) -> Result<T>
     where
         T: Deserialize<'t>,
     {
@@ -119,7 +119,7 @@ impl Value {
     /// }
     /// ```
     #[inline]
-    pub fn dump<T>(value: T) -> Result<Self, Error>
+    pub fn dump<T>(value: T) -> Result<Self>
     where
         T: Serialize,
     {
@@ -159,7 +159,7 @@ impl Value {
     /// assert_eq!(foo.a, 0x3240);
     /// assert_eq!(foo.b, "Hello");
     /// ```
-    pub fn parse_obj<T>(&self) -> Result<T, Error>
+    pub fn parse_obj<T>(&self) -> Result<T>
     where
         T: ObjectParse,
         <T as ObjectParse>::Error: std::error::Error + 'static,
@@ -205,7 +205,7 @@ impl Value {
     /// }
     /// ```
     #[inline]
-    pub fn dump_obj<T>(value: T) -> Result<Self, Error>
+    pub fn dump_obj<T>(value: T) -> Result<Self>
     where
         T: ObjectDump,
         <T as ObjectDump>::Error: std::error::Error + 'static,
@@ -600,7 +600,7 @@ impl Type {
     }
 
     /// Get the type from the given prefix
-    pub fn from_prefix(prefix: u8) -> Result<Self, Error> {
+    pub fn from_prefix(prefix: u8) -> Result<Self> {
         match prefix {
             b'l' => Ok(Type::Long),
             b'i' => Ok(Type::Int),

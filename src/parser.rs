@@ -4,7 +4,7 @@
 
 use crate::{
     data::{Mark, Type, Value},
-    error::Error,
+    error::{Error, Result},
     object::ObjectParse,
 };
 use byteorder::{BigEndian, ReadBytesExt};
@@ -87,7 +87,7 @@ where
     /// assert_eq!(i, 0x42);
     /// ```
     #[inline]
-    pub fn next<T>(&mut self) -> Result<T, Error>
+    pub fn next<T>(&mut self) -> Result<T>
     where
         T: DeserializeOwned,
     {
@@ -138,7 +138,7 @@ where
     /// assert_eq!(foo.c, 0.0);
     /// ```
     #[inline]
-    pub fn next_obj<T>(&mut self) -> Result<T, Error>
+    pub fn next_obj<T>(&mut self) -> Result<T>
     where
         T: ObjectParse,
         <T as ObjectParse>::Error: std::error::Error + 'static,
@@ -147,64 +147,64 @@ where
     }
 
     #[inline]
-    fn next_type(&mut self) -> Result<Type, Error> {
+    fn next_type(&mut self) -> Result<Type> {
         Type::from_prefix(self.0.read_u8()?)
     }
 
-    fn next_data_n(&mut self, n: usize) -> Result<Vec<u8>, Error> {
+    fn next_data_n(&mut self, n: usize) -> Result<Vec<u8>> {
         let mut buf = vec![0; n];
         self.0.read_exact(&mut buf)?;
         Ok(buf)
     }
 
     #[inline]
-    fn next_data_long(&mut self) -> Result<i64, Error> {
+    fn next_data_long(&mut self) -> Result<i64> {
         Ok(self.0.read_i64::<BigEndian>()?)
     }
 
     #[inline]
-    fn next_data_int(&mut self) -> Result<i32, Error> {
+    fn next_data_int(&mut self) -> Result<i32> {
         Ok(self.0.read_i32::<BigEndian>()?)
     }
 
     #[inline]
-    fn next_data_short(&mut self) -> Result<i16, Error> {
+    fn next_data_short(&mut self) -> Result<i16> {
         Ok(self.0.read_i16::<BigEndian>()?)
     }
 
     #[inline]
-    fn next_data_char(&mut self) -> Result<i8, Error> {
+    fn next_data_char(&mut self) -> Result<i8> {
         Ok(self.0.read_i8()?)
     }
 
     #[inline]
-    fn next_data_float(&mut self) -> Result<f32, Error> {
+    fn next_data_float(&mut self) -> Result<f32> {
         Ok(self.0.read_f32::<BigEndian>()?)
     }
 
     #[inline]
-    fn next_data_double(&mut self) -> Result<f64, Error> {
+    fn next_data_double(&mut self) -> Result<f64> {
         Ok(self.0.read_f64::<BigEndian>()?)
     }
 
     #[inline]
-    fn next_data_bytes(&mut self, n: usize) -> Result<Vec<u8>, Error> {
+    fn next_data_bytes(&mut self, n: usize) -> Result<Vec<u8>> {
         self.next_data_n(n)
     }
 
     #[inline]
-    fn next_data_str(&mut self, n: usize) -> Result<String, Error> {
+    fn next_data_str(&mut self, n: usize) -> Result<String> {
         let buf = self.next_data_n(n)?;
         Ok(String::from_utf8(buf)?)
     }
 
-    fn next_data_enum(&mut self, m: &Mark) -> Result<(u32, Value), Error> {
+    fn next_data_enum(&mut self, m: &Mark) -> Result<(u32, Value)> {
         let variant = self.next_data_int()? as u32;
         let value = self.next_data_value(m)?;
         Ok((variant, value))
     }
 
-    fn next_data_array(&mut self, len: usize, t: &Mark) -> Result<Vec<Value>, Error> {
+    fn next_data_array(&mut self, len: usize, t: &Mark) -> Result<Vec<Value>> {
         let mut arr = Vec::with_capacity(len);
 
         for _ in 0..len {
@@ -215,7 +215,7 @@ where
         Ok(arr)
     }
 
-    fn next_data_list(&mut self, size: usize) -> Result<Vec<Value>, Error> {
+    fn next_data_list(&mut self, size: usize) -> Result<Vec<Value>> {
         let mut arr = Vec::new();
 
         let mut read = 0;
@@ -234,12 +234,7 @@ where
         Ok(arr)
     }
 
-    fn next_data_dict(
-        &mut self,
-        len: usize,
-        k: &Mark,
-        v: &Mark,
-    ) -> Result<Vec<(Value, Value)>, Error> {
+    fn next_data_dict(&mut self, len: usize, k: &Mark, v: &Mark) -> Result<Vec<(Value, Value)>> {
         let mut arr = Vec::with_capacity(len);
 
         for _ in 0..len {
@@ -251,7 +246,7 @@ where
         Ok(arr)
     }
 
-    fn next_data_map(&mut self, size: usize) -> Result<Vec<(Value, Value)>, Error> {
+    fn next_data_map(&mut self, size: usize) -> Result<Vec<(Value, Value)>> {
         let mut arr = Vec::new();
         let mut read = 0;
 
@@ -272,7 +267,7 @@ where
         Ok(arr)
     }
 
-    pub(crate) fn next_data_value(&mut self, mark: &Mark) -> Result<Value, Error> {
+    pub(crate) fn next_data_value(&mut self, mark: &Mark) -> Result<Value> {
         Ok(match mark {
             Mark::Long => Value::Long(self.next_data_long()?),
             Mark::Int => Value::Int(self.next_data_int()?),
@@ -295,7 +290,7 @@ where
         })
     }
 
-    fn next_mark(&mut self) -> Result<Mark, Error> {
+    fn next_mark(&mut self) -> Result<Mark> {
         let t = self.next_type()?;
         Ok(match t {
             Type::Long => Mark::Long,
@@ -347,7 +342,7 @@ where
     /// let v: i32 = parser.next().unwrap();
     /// assert_eq!(v, 0x42);
     /// ```
-    pub fn skip_next(&mut self) -> Result<(), Error> {
+    pub fn skip_next(&mut self) -> Result<()> {
         let mark = self.next_mark()?;
         let size = mark.data_size();
 
@@ -371,7 +366,7 @@ where
     /// assert_eq!(parser.next_value().unwrap(), Value::Int(0x42));
     /// ```
     #[inline]
-    pub fn next_value(&mut self) -> Result<Value, Error> {
+    pub fn next_value(&mut self) -> Result<Value> {
         let mark = self.next_mark()?;
         self.next_data_value(&mark)
     }
@@ -403,7 +398,7 @@ where
     ///
     /// assert_eq!(val, 32);
     /// ```
-    pub fn seek_next(&mut self) -> Result<(), Error> {
+    pub fn seek_next(&mut self) -> Result<()> {
         let mark = self.next_mark()?;
         let size = mark.data_size();
 
