@@ -127,6 +127,7 @@
 //! assert_eq!(foo, new_foo);
 //! ```
 
+pub mod async_wrapper;
 pub mod data;
 pub mod dumper;
 pub mod error;

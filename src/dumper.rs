@@ -69,7 +69,7 @@ where
 
     /// Get the underlying writer as a mutable reference
     #[inline]
-    pub fn get_writermut(&mut self) -> &mut W {
+    pub fn get_writer_mut(&mut self) -> &mut W {
         &mut self.0
     }
 
