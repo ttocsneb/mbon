@@ -27,7 +27,16 @@ where
     T: AsRef<[u8]>,
 {
     fn from(slice: &'a T) -> Self {
-        Self::new(slice.as_ref())
+        Self(slice.as_ref())
+    }
+}
+
+impl<T> From<T> for Parser<T>
+where
+    T: Read,
+{
+    fn from(reader: T) -> Self {
+        Self(reader)
     }
 }
 
@@ -35,12 +44,6 @@ impl<R> Parser<R>
 where
     R: Read,
 {
-    /// Create a new Parser from a reader
-    #[inline]
-    pub fn new(data: R) -> Self {
-        Self(data)
-    }
-
     /// Parse the next item in the parser.
     ///
     /// ```
@@ -82,7 +85,7 @@ where
     ///     type Error = Error;
     ///
     ///     fn parse_object(data: &[u8]) -> Result<Self, Self::Error> {
-    ///         let mut parser = Parser::new(data);
+    ///         let mut parser = Parser::from(data);
     ///         let a = parser.next()?;
     ///         let b = parser.next()?;
     ///         let c = parser.next()?;

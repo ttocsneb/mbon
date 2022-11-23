@@ -32,7 +32,7 @@
 //! dumper.write(&b).unwrap();
 //! dumper.write(&c).unwrap();
 //!
-//! let output = dumper.into_buffer();
+//! let output = dumper.writer();
 //! assert_eq!(output, b"i\x00\x00\x00\x20s\x00\x00\x00\x0bHello Worldca");
 //! ```
 //!
@@ -96,7 +96,7 @@
 //!         dumper.write(&self.b)?;
 //!         dumper.write(&self.c)?;
 //!
-//!         Ok(dumper.into())
+//!         Ok(dumper.writer())
 //!     }
 //! }
 //!
@@ -104,7 +104,7 @@
 //!     type Error = Error;
 //!
 //!     fn parse_object(object: &[u8]) -> Result<Self, Self::Error> {
-//!         let mut parser = Parser::new(object);
+//!         let mut parser = Parser::from(object);
 //!
 //!         let a = parser.next()?;
 //!         let b = parser.next()?;
@@ -119,7 +119,8 @@
 //!
 //! dumper.write_obj(&foo).unwrap();
 //!
-//! let mut parser = Parser::from(dumper.buffer());
+//! let buf = dumper.writer();
+//! let mut parser = Parser::from(&buf);
 //!
 //! let new_foo: Foo = parser.next_obj().unwrap();
 //!

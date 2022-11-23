@@ -5,9 +5,11 @@
 use byteorder::{BigEndian, WriteBytesExt};
 use serde::Serialize;
 
+use std::io::Write;
+
 use crate::{
     data::{ser::ValueSer, Mark, Type, Value},
-    error::Error,
+    error::{Error, Result},
     object::ObjectDump,
 };
 
@@ -31,89 +33,99 @@ use crate::{
 /// * [`write_enum()`](Dumper::write_enum)
 /// * [`write_list()`](Dumper::write_list)
 /// * [`write_map()`](Dumper::write_map)
-///
-/// When you are finished writing to the dumper, you can get the buffer using
-/// [`buffer()`](Dumper::buffer) or [`into_buffer()`](Dumper::into_buffer).
-pub struct Dumper(Vec<u8>);
+pub struct Dumper<W>(W);
 
-impl From<Dumper> for Vec<u8> {
-    fn from(val: Dumper) -> Self {
-        val.0
+impl<T> From<T> for Dumper<T>
+where
+    T: Write,
+{
+    fn from(t: T) -> Self {
+        Dumper(t)
     }
 }
 
-impl Dumper {
+impl Dumper<Vec<u8>> {
     #[inline]
     pub fn new() -> Self {
         Self(Vec::new())
     }
+}
 
+impl<W> Dumper<W>
+where
+    W: Write,
+{
+    /// Get the underlying writer
     #[inline]
-    pub fn buffer(&self) -> &Vec<u8> {
-        &self.0
-    }
-
-    #[inline]
-    pub fn into_buffer(self) -> Vec<u8> {
+    pub fn writer(self) -> W {
         self.0
     }
 
+    /// Get the underlying writer as a reference
     #[inline]
-    fn write_data_long(&mut self, val: i64) -> Result<(), Error> {
+    pub fn get_writer(&self) -> &W {
+        &self.0
+    }
+
+    /// Get the underlying writer as a mutable reference
+    #[inline]
+    pub fn get_writermut(&mut self) -> &mut W {
+        &mut self.0
+    }
+
+    #[inline]
+    fn write_data_long(&mut self, val: i64) -> Result<()> {
         self.0.write_i64::<BigEndian>(val)?;
         Ok(())
     }
 
     #[inline]
-    fn write_data_int(&mut self, val: i32) -> Result<(), Error> {
+    fn write_data_int(&mut self, val: i32) -> Result<()> {
         self.0.write_i32::<BigEndian>(val)?;
         Ok(())
     }
 
     #[inline]
-    fn write_data_short(&mut self, val: i16) -> Result<(), Error> {
+    fn write_data_short(&mut self, val: i16) -> Result<()> {
         self.0.write_i16::<BigEndian>(val)?;
         Ok(())
     }
 
     #[inline]
-    fn write_data_char(&mut self, val: i8) -> Result<(), Error> {
+    fn write_data_char(&mut self, val: i8) -> Result<()> {
         self.0.write_i8(val)?;
         Ok(())
     }
 
     #[inline]
-    fn write_data_float(&mut self, val: f32) -> Result<(), Error> {
+    fn write_data_float(&mut self, val: f32) -> Result<()> {
         self.0.write_f32::<BigEndian>(val)?;
         Ok(())
     }
 
     #[inline]
-    fn write_data_double(&mut self, val: f64) -> Result<(), Error> {
+    fn write_data_double(&mut self, val: f64) -> Result<()> {
         self.0.write_f64::<BigEndian>(val)?;
         Ok(())
     }
 
     #[inline]
-    fn write_data_bytes<'t, I>(&mut self, val: I)
-    where
-        I: IntoIterator<Item = &'t u8>,
-    {
-        self.0.extend(val);
+    fn write_data_bytes(&mut self, val: &[u8]) -> Result<()> {
+        Ok(self.0.write_all(val)?)
     }
 
     #[inline]
-    fn write_data_str(&mut self, val: &str) {
-        self.0.extend(val.bytes());
+    fn write_data_str(&mut self, val: &str) -> Result<()> {
+        Ok(self.0.write_all(val.as_bytes())?)
     }
 
     #[inline]
-    fn write_data_enum(&mut self, variant: u32, val: impl AsRef<Value>) -> Result<(), Error> {
+    fn write_data_enum(&mut self, variant: u32, val: impl AsRef<Value>) -> Result<()> {
         self.write_data_int(variant as i32)?;
         self.write_data_value(val)
     }
 
-    fn write_data_array<'t, I>(&mut self, val: I) -> Result<(), Error>
+    fn write_data_array<'t, I>(&mut self, val: I) -> Result<()>
     where
         I: IntoIterator<Item = &'t Value>,
     {
@@ -124,7 +136,7 @@ impl Dumper {
         Ok(())
     }
 
-    fn write_data_list<'t, I>(&mut self, val: I) -> Result<(), Error>
+    fn write_data_list<'t, I>(&mut self, val: I) -> Result<()>
     where
         I: IntoIterator<Item = &'t Value>,
     {
@@ -134,7 +146,7 @@ impl Dumper {
         Ok(())
     }
 
-    fn write_data_dict<'t, I>(&mut self, val: I) -> Result<(), Error>
+    fn write_data_dict<'t, I>(&mut self, val: I) -> Result<()>
     where
         I: IntoIterator<Item = &'t (Value, Value)>,
     {
@@ -146,7 +158,7 @@ impl Dumper {
         Ok(())
     }
 
-    fn write_data_map<'t, I>(&mut self, val: I) -> Result<(), Error>
+    fn write_data_map<'t, I>(&mut self, val: I) -> Result<()>
     where
         I: IntoIterator<Item = &'t (Value, Value)>,
     {
@@ -157,7 +169,7 @@ impl Dumper {
         Ok(())
     }
 
-    fn write_data_value(&mut self, val: impl AsRef<Value>) -> Result<(), Error> {
+    fn write_data_value(&mut self, val: impl AsRef<Value>) -> Result<()> {
         let val = val.as_ref();
         match val {
             Value::Long(v) => self.write_data_long(*v),
@@ -166,18 +178,9 @@ impl Dumper {
             Value::Char(v) => self.write_data_char(*v),
             Value::Float(v) => self.write_data_float(*v),
             Value::Double(v) => self.write_data_double(*v),
-            Value::Bytes(v) => {
-                self.write_data_bytes(v);
-                Ok(())
-            }
-            Value::Str(v) => {
-                self.write_data_str(v);
-                Ok(())
-            }
-            Value::Object(v) => {
-                self.write_data_bytes(v);
-                Ok(())
-            }
+            Value::Bytes(v) => self.write_data_bytes(v),
+            Value::Str(v) => self.write_data_str(v),
+            Value::Object(v) => self.write_data_bytes(v),
             Value::Enum(var, v) => self.write_data_enum(*var, v),
             Value::Null => Ok(()),
             Value::List(v) => {
@@ -198,72 +201,72 @@ impl Dumper {
     }
 
     #[inline]
-    fn write_mark_long(&mut self) {
-        self.0.push(Type::Long.prefix());
+    fn write_mark_long(&mut self) -> Result<()> {
+        Ok(self.0.write_u8(Type::Long.prefix())?)
     }
 
     #[inline]
-    fn write_mark_int(&mut self) {
-        self.0.push(Type::Int.prefix());
+    fn write_mark_int(&mut self) -> Result<()> {
+        Ok(self.0.write_u8(Type::Int.prefix())?)
     }
 
     #[inline]
-    fn write_mark_short(&mut self) {
-        self.0.push(Type::Short.prefix());
+    fn write_mark_short(&mut self) -> Result<()> {
+        Ok(self.0.write_u8(Type::Short.prefix())?)
     }
 
     #[inline]
-    fn write_mark_char(&mut self) {
-        self.0.push(Type::Char.prefix());
+    fn write_mark_char(&mut self) -> Result<()> {
+        Ok(self.0.write_u8(Type::Char.prefix())?)
     }
 
     #[inline]
-    fn write_mark_float(&mut self) {
-        self.0.push(Type::Float.prefix());
+    fn write_mark_float(&mut self) -> Result<()> {
+        Ok(self.0.write_u8(Type::Float.prefix())?)
     }
 
     #[inline]
-    fn write_mark_double(&mut self) {
-        self.0.push(Type::Double.prefix());
+    fn write_mark_double(&mut self) -> Result<()> {
+        Ok(self.0.write_u8(Type::Double.prefix())?)
     }
 
     #[inline]
-    fn write_mark_null(&mut self) {
-        self.0.push(Type::Null.prefix());
+    fn write_mark_null(&mut self) -> Result<()> {
+        Ok(self.0.write_u8(Type::Null.prefix())?)
     }
 
-    fn write_mark_bytes(&mut self, len: usize) -> Result<(), Error> {
-        self.0.push(Type::Bytes.prefix());
+    fn write_mark_bytes(&mut self, len: usize) -> Result<()> {
+        self.0.write_u8(Type::Bytes.prefix())?;
         let len: u32 = len.try_into()?;
         self.write_data_int(len as i32)
     }
 
-    fn write_mark_str(&mut self, len: usize) -> Result<(), Error> {
-        self.0.push(Type::Str.prefix());
+    fn write_mark_str(&mut self, len: usize) -> Result<()> {
+        self.0.write_u8(Type::Str.prefix())?;
         let len: u32 = len.try_into()?;
         self.write_data_int(len as i32)
     }
 
-    fn write_mark_object(&mut self, len: usize) -> Result<(), Error> {
-        self.0.push(Type::Object.prefix());
+    fn write_mark_object(&mut self, len: usize) -> Result<()> {
+        self.0.write_u8(Type::Object.prefix())?;
         let len: u32 = len.try_into()?;
         self.write_data_int(len as i32)
     }
 
-    fn write_mark_enum(&mut self, mark: impl AsRef<Mark>) -> Result<(), Error> {
-        self.0.push(Type::Enum.prefix());
+    fn write_mark_enum(&mut self, mark: impl AsRef<Mark>) -> Result<()> {
+        self.0.write_u8(Type::Enum.prefix())?;
         self.write_mark(mark)
     }
 
-    fn write_mark_array(&mut self, len: usize, mark: impl AsRef<Mark>) -> Result<(), Error> {
-        self.0.push(Type::Array.prefix());
+    fn write_mark_array(&mut self, len: usize, mark: impl AsRef<Mark>) -> Result<()> {
+        self.0.write_u8(Type::Array.prefix())?;
         self.write_mark(mark)?;
         let len: u32 = len.try_into()?;
         self.write_data_int(len as i32)
     }
 
-    fn write_mark_list(&mut self, size: usize) -> Result<(), Error> {
-        self.0.push(Type::List.prefix());
+    fn write_mark_list(&mut self, size: usize) -> Result<()> {
+        self.0.write_u8(Type::List.prefix())?;
         let size: u32 = size.try_into()?;
         self.write_data_int(size as i32)
     }
@@ -273,21 +276,21 @@ impl Dumper {
         len: usize,
         key_mark: impl AsRef<Mark>,
         val_mark: impl AsRef<Mark>,
-    ) -> Result<(), Error> {
-        self.0.push(Type::Dict.prefix());
+    ) -> Result<()> {
+        self.0.write_u8(Type::Dict.prefix())?;
         let len: u32 = len.try_into()?;
         self.write_mark(key_mark)?;
         self.write_mark(val_mark)?;
         self.write_data_int(len as i32)
     }
 
-    fn write_mark_map(&mut self, size: usize) -> Result<(), Error> {
-        self.0.push(Type::Map.prefix());
+    fn write_mark_map(&mut self, size: usize) -> Result<()> {
+        self.0.write_u8(Type::Map.prefix())?;
         let size: u32 = size.try_into()?;
         self.write_data_int(size as i32)
     }
 
-    fn write_mark(&mut self, mark: impl AsRef<Mark>) -> Result<(), Error> {
+    fn write_mark(&mut self, mark: impl AsRef<Mark>) -> Result<()> {
         match mark.as_ref() {
             Mark::Long => self.write_mark_long(),
             Mark::Int => self.write_mark_int(),
@@ -295,17 +298,16 @@ impl Dumper {
             Mark::Char => self.write_mark_char(),
             Mark::Float => self.write_mark_float(),
             Mark::Double => self.write_mark_double(),
-            Mark::Bytes(n) => self.write_mark_bytes(*n)?,
-            Mark::Str(n) => self.write_mark_str(*n)?,
-            Mark::Object(n) => self.write_mark_object(*n)?,
-            Mark::Enum(m) => self.write_mark_enum(m)?,
+            Mark::Bytes(n) => self.write_mark_bytes(*n),
+            Mark::Str(n) => self.write_mark_str(*n),
+            Mark::Object(n) => self.write_mark_object(*n),
+            Mark::Enum(m) => self.write_mark_enum(m),
             Mark::Null => self.write_mark_null(),
-            Mark::Array(n, m) => self.write_mark_array(*n, m)?,
-            Mark::List(s) => self.write_mark_list(*s)?,
-            Mark::Dict(n, k, v) => self.write_mark_dict(*n, k, v)?,
-            Mark::Map(s) => self.write_mark_map(*s)?,
-        };
-        Ok(())
+            Mark::Array(n, m) => self.write_mark_array(*n, m),
+            Mark::List(s) => self.write_mark_list(*s),
+            Mark::Dict(n, k, v) => self.write_mark_dict(*n, k, v),
+            Mark::Map(s) => self.write_mark_map(*s),
+        }
     }
 
     /// Write a serializeable object to the buffer.
@@ -332,7 +334,7 @@ impl Dumper {
     /// dumper.write(&foo).unwrap();
     ///
     /// ```
-    pub fn write<T>(&mut self, value: &T) -> Result<(), Error>
+    pub fn write<T>(&mut self, value: &T) -> Result<()>
     where
         T: Serialize,
     {
@@ -363,7 +365,7 @@ impl Dumper {
     ///         dumper.write(&self.a)?;
     ///         dumper.write(&self.b)?;
     ///         dumper.write(&self.c)?;
-    ///         Ok(dumper.into_buffer())
+    ///         Ok(dumper.writer())
     ///     }
     /// }
     ///
@@ -375,7 +377,7 @@ impl Dumper {
     /// };
     /// dumper.write_obj(&foo);
     /// ```
-    pub fn write_obj<T>(&mut self, value: &T) -> Result<(), Error>
+    pub fn write_obj<T>(&mut self, value: &T) -> Result<()>
     where
         T: ObjectDump,
         <T as ObjectDump>::Error: std::error::Error + 'static,
@@ -392,10 +394,10 @@ impl Dumper {
     /// let mut dumper = Dumper::new();
     /// dumper.write_long(0x1020304050607080).unwrap();
     ///
-    /// assert_eq!(dumper.buffer(), b"l\x10\x20\x30\x40\x50\x60\x70\x80");
+    /// assert_eq!(dumper.writer(), b"l\x10\x20\x30\x40\x50\x60\x70\x80");
     /// ```
-    pub fn write_long(&mut self, val: i64) -> Result<(), Error> {
-        self.write_mark_long();
+    pub fn write_long(&mut self, val: i64) -> Result<()> {
+        self.write_mark_long()?;
         self.write_data_long(val)
     }
 
@@ -407,10 +409,10 @@ impl Dumper {
     /// let mut dumper = Dumper::new();
     /// dumper.write_int(0x10203040).unwrap();
     ///
-    /// assert_eq!(dumper.buffer(), b"i\x10\x20\x30\x40");
+    /// assert_eq!(dumper.writer(), b"i\x10\x20\x30\x40");
     /// ```
-    pub fn write_int(&mut self, val: i32) -> Result<(), Error> {
-        self.write_mark_int();
+    pub fn write_int(&mut self, val: i32) -> Result<()> {
+        self.write_mark_int()?;
         self.write_data_int(val)
     }
 
@@ -422,10 +424,10 @@ impl Dumper {
     /// let mut dumper = Dumper::new();
     /// dumper.write_short(0x1020).unwrap();
     ///
-    /// assert_eq!(dumper.buffer(), b"h\x10\x20");
+    /// assert_eq!(dumper.writer(), b"h\x10\x20");
     /// ```
-    pub fn write_short(&mut self, val: i16) -> Result<(), Error> {
-        self.write_mark_short();
+    pub fn write_short(&mut self, val: i16) -> Result<()> {
+        self.write_mark_short()?;
         self.write_data_short(val)
     }
 
@@ -437,10 +439,10 @@ impl Dumper {
     /// let mut dumper = Dumper::new();
     /// dumper.write_char(0x10).unwrap();
     ///
-    /// assert_eq!(dumper.buffer(), b"c\x10");
+    /// assert_eq!(dumper.writer(), b"c\x10");
     /// ```
-    pub fn write_char(&mut self, val: i8) -> Result<(), Error> {
-        self.write_mark_char();
+    pub fn write_char(&mut self, val: i8) -> Result<()> {
+        self.write_mark_char()?;
         self.write_data_char(val)
     }
 
@@ -452,10 +454,10 @@ impl Dumper {
     /// let mut dumper = Dumper::new();
     /// dumper.write_float(0.0).unwrap();
     ///
-    /// assert_eq!(dumper.buffer(), b"f\x00\x00\x00\x00");
+    /// assert_eq!(dumper.writer(), b"f\x00\x00\x00\x00");
     /// ```
-    pub fn write_float(&mut self, val: f32) -> Result<(), Error> {
-        self.write_mark_float();
+    pub fn write_float(&mut self, val: f32) -> Result<()> {
+        self.write_mark_float()?;
         self.write_data_float(val)
     }
 
@@ -467,10 +469,10 @@ impl Dumper {
     /// let mut dumper = Dumper::new();
     /// dumper.write_double(0.0).unwrap();
     ///
-    /// assert_eq!(dumper.buffer(), b"d\x00\x00\x00\x00\x00\x00\x00\x00");
+    /// assert_eq!(dumper.writer(), b"d\x00\x00\x00\x00\x00\x00\x00\x00");
     /// ```
-    pub fn write_double(&mut self, val: f64) -> Result<(), Error> {
-        self.write_mark_double();
+    pub fn write_double(&mut self, val: f64) -> Result<()> {
+        self.write_mark_double()?;
         self.write_data_double(val)
     }
 
@@ -484,13 +486,12 @@ impl Dumper {
     /// let mut dumper = Dumper::new();
     /// dumper.write_bytes(b"hello").unwrap();
     ///
-    /// assert_eq!(dumper.buffer(), b"b\x00\x00\x00\x05hello");
+    /// assert_eq!(dumper.writer(), b"b\x00\x00\x00\x05hello");
     /// ```
-    pub fn write_bytes(&mut self, val: impl AsRef<[u8]>) -> Result<(), Error> {
+    pub fn write_bytes(&mut self, val: impl AsRef<[u8]>) -> Result<()> {
         let val = val.as_ref();
         self.write_mark_bytes(val.len())?;
-        self.write_data_bytes(val);
-        Ok(())
+        self.write_data_bytes(val)
     }
 
     /// Write a string to the dumper.
@@ -503,13 +504,12 @@ impl Dumper {
     /// let mut dumper = Dumper::new();
     /// dumper.write_str("hello").unwrap();
     ///
-    /// assert_eq!(dumper.buffer(), b"s\x00\x00\x00\x05hello");
+    /// assert_eq!(dumper.writer(), b"s\x00\x00\x00\x05hello");
     /// ```
-    pub fn write_str(&mut self, val: impl AsRef<str>) -> Result<(), Error> {
+    pub fn write_str(&mut self, val: impl AsRef<str>) -> Result<()> {
         let val = val.as_ref();
         self.write_mark_str(val.len())?;
-        self.write_data_str(val);
-        Ok(())
+        self.write_data_str(val)
     }
 
     /// Write a binary object to the dumper.
@@ -524,13 +524,12 @@ impl Dumper {
     /// let mut dumper = Dumper::new();
     /// dumper.write_object("hello").unwrap();
     ///
-    /// assert_eq!(dumper.buffer(), b"o\x00\x00\x00\x05hello");
+    /// assert_eq!(dumper.writer(), b"o\x00\x00\x00\x05hello");
     /// ```
-    pub fn write_object(&mut self, val: impl AsRef<[u8]>) -> Result<(), Error> {
+    pub fn write_object(&mut self, val: impl AsRef<[u8]>) -> Result<()> {
         let val = val.as_ref();
         self.write_mark_object(val.len())?;
-        self.write_data_bytes(val);
-        Ok(())
+        self.write_data_bytes(val)
     }
 
     /// Write an indexed value to the dumper.
@@ -547,9 +546,9 @@ impl Dumper {
     /// let mut dumper = Dumper::new();
     /// dumper.write_enum(1, Value::Int(0x3000)).unwrap();
     ///
-    /// assert_eq!(dumper.buffer(), b"ei\x00\x00\x00\x01\x00\x00\x30\x00");
+    /// assert_eq!(dumper.writer(), b"ei\x00\x00\x00\x01\x00\x00\x30\x00");
     /// ```
-    pub fn write_enum(&mut self, variant: u32, val: impl AsRef<Value>) -> Result<(), Error> {
+    pub fn write_enum(&mut self, variant: u32, val: impl AsRef<Value>) -> Result<()> {
         let val = val.as_ref();
         self.write_mark_enum(Mark::from(val))?;
         self.write_data_enum(variant, val)
@@ -563,9 +562,9 @@ impl Dumper {
     /// let mut dumper = Dumper::new();
     /// dumper.write_null();
     ///
-    /// assert_eq!(dumper.buffer(), b"n");
+    /// assert_eq!(dumper.writer(), b"n");
     /// ```
-    pub fn write_null(&mut self) {
+    pub fn write_null(&mut self) -> Result<()> {
         self.write_mark_null()
     }
 
@@ -592,7 +591,7 @@ impl Dumper {
     ///     Value::Char(0x50)
     /// ]);
     ///
-    /// assert_eq!(dumper.buffer(), b"ac\x00\x00\x00\x05\x10\x20\x30\x40\x50");
+    /// assert_eq!(dumper.writer(), b"ac\x00\x00\x00\x05\x10\x20\x30\x40\x50");
     ///
     /// let mut dumper = Dumper::new();
     /// dumper.write_list(vec![
@@ -603,10 +602,10 @@ impl Dumper {
     ///     Value::Str("Hello".to_owned())
     /// ]);
     ///
-    /// assert_eq!(dumper.buffer(),
+    /// assert_eq!(dumper.writer(),
     /// b"A\x00\x00\x00\x12c\x10c\x20c\x30c\x40s\x00\x00\x00\x05Hello");
     /// ```
-    pub fn write_list(&mut self, val: impl AsRef<Vec<Value>>) -> Result<(), Error> {
+    pub fn write_list(&mut self, val: impl AsRef<Vec<Value>>) -> Result<()> {
         let val = val.as_ref();
         if Value::can_be_array(val) {
             self.write_mark_array(val.len(), Mark::from(val.first().unwrap()))?;
@@ -638,7 +637,7 @@ impl Dumper {
     ///     (Value::Str("c".to_owned()), Value::Char(0x30)),
     /// ]);
     ///
-    /// assert_eq!(dumper.buffer(),
+    /// assert_eq!(dumper.writer(),
     /// b"ms\x00\x00\x00\x01c\x00\x00\x00\x03a\x10b\x20c\x30");
     ///
     /// let mut dumper = Dumper::new();
@@ -648,10 +647,10 @@ impl Dumper {
     ///     (Value::Str("c".to_owned()), Value::Short(0x30)),
     /// ]);
     ///
-    /// assert_eq!(dumper.buffer(),
+    /// assert_eq!(dumper.writer(),
     /// b"M\x00\x00\x00\x19s\x00\x00\x00\x01ac\x10s\x00\x00\x00\x01bc\x20s\x00\x00\x00\x01ch\x00\x30");
     /// ```
-    pub fn write_map(&mut self, val: impl AsRef<Vec<(Value, Value)>>) -> Result<(), Error> {
+    pub fn write_map(&mut self, val: impl AsRef<Vec<(Value, Value)>>) -> Result<()> {
         let val = val.as_ref();
         if Value::can_be_dict(val) {
             let (k, v) = val.first().unwrap();
@@ -666,7 +665,7 @@ impl Dumper {
     /// Write any value to the dumper.
     ///
     /// This will call the appropriate function for the given value type.
-    pub fn write_value(&mut self, val: impl AsRef<Value>) -> Result<(), Error> {
+    pub fn write_value(&mut self, val: impl AsRef<Value>) -> Result<()> {
         let val = val.as_ref();
         match val {
             Value::Long(v) => self.write_long(*v),
@@ -679,10 +678,7 @@ impl Dumper {
             Value::Str(v) => self.write_str(v),
             Value::Object(v) => self.write_object(v),
             Value::Enum(variant, v) => self.write_enum(*variant, v),
-            Value::Null => {
-                self.write_null();
-                Ok(())
-            }
+            Value::Null => self.write_null(),
             Value::List(v) => self.write_list(v),
             Value::Map(v) => self.write_map(v),
         }
@@ -766,7 +762,7 @@ mod test {
     #[test]
     fn test_null() {
         let mut dumper = Dumper::new();
-        dumper.write_null();
+        dumper.write_null().unwrap();
         assert_eq!(dumper.0, b"n");
     }
 

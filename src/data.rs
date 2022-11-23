@@ -146,7 +146,7 @@ impl Value {
     ///     type Error = Error;
     ///
     ///     fn parse_object(object: &[u8]) -> Result<Self, Self::Error> {
-    ///         let mut parser = Parser::new(object);
+    ///         let mut parser = Parser::from(object);
     ///         let a = parser.next()?;
     ///         let b = parser.next()?;
     ///         Ok(Self { a, b })
@@ -191,7 +191,7 @@ impl Value {
     ///         let mut dumper = Dumper::new();
     ///         dumper.write(&self.a);
     ///         dumper.write(&self.b);
-    ///         Ok(dumper.into())
+    ///         Ok(dumper.writer())
     ///     }
     /// }
     ///

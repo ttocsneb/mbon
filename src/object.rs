@@ -21,7 +21,7 @@
 ///     type Error = Error;
 ///
 ///     fn parse_object(object: &[u8]) -> Result<Self, Self::Error> {
-///         let mut parser = Parser::new(object);
+///         let mut parser = Parser::from(object);
 ///
 ///         let a = parser.next()?;
 ///         let b = parser.next()?;
@@ -65,7 +65,7 @@ where
 ///         dumper.write(&self.a)?;
 ///         dumper.write(&self.b)?;
 ///
-///         Ok(dumper.into())
+///         Ok(dumper.writer())
 ///     }
 /// }
 /// ```
@@ -97,7 +97,7 @@ mod test {
         type Error = Error;
 
         fn parse_object(data: &[u8]) -> Result<Self, Error> {
-            let mut parser = Parser::new(data);
+            let mut parser = Parser::from(data);
             let a: String = parser.next()?;
             let b: i32 = parser.next()?;
             let c: Vec<String> = parser.next()?;
@@ -113,7 +113,7 @@ mod test {
             dumper.write(&self.a)?;
             dumper.write(&self.b)?;
             dumper.write(&self.c)?;
-            Ok(dumper.into())
+            Ok(dumper.writer())
         }
     }
 
@@ -148,6 +148,6 @@ mod test {
             })
             .unwrap();
 
-        assert_eq!(dumper.buffer(), data);
+        assert_eq!(dumper.writer(), data);
     }
 }

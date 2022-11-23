@@ -40,7 +40,7 @@ dumper.write_int(a).unwrap();
 dumper.write(&b).unwrap();
 dumper.write(&c).unwrap();
 
-let output = dumper.into_buffer();
+let output = dumper.writer();
 assert_eq!(output, b"i\x00\x00\x00\x20s\x00\x00\x00\x0bHello Worldca");
 ```
 
@@ -105,7 +105,7 @@ impl ObjectDump for Foo {
         dumper.write(&self.b)?;
         dumper.write(&self.c)?;
 
-        Ok(dumper.into())
+        Ok(dumper.writer())
     }
 }
 
@@ -128,7 +128,8 @@ let mut dumper = Dumper::new();
 
 dumper.write_obj(&foo).unwrap();
 
-let mut parser = Parser::from(dumper.buffer());
+let buf = dumper.writer();
+let mut parser = Parser::from(&buf);
 
 let new_foo: Foo = parser.next_obj().unwrap();
 
