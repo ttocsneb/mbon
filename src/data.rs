@@ -338,6 +338,10 @@ impl AsRef<Value> for Value {
     }
 }
 
+/// An indicator of what's contained in the value.
+///
+/// This is the first thing that is read/written in mbon, and it will tell the
+/// reader how to read the value that the mark represents.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Mark {
     Long,
@@ -527,6 +531,10 @@ impl<'t> From<&'t Value> for Mark {
     }
 }
 
+/// An indicator for what type of value is stored
+///
+/// This is the first byte that is read/written and indicates how to read the
+/// mark that is contained.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
     Long,

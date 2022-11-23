@@ -33,6 +33,7 @@ use crate::{
 /// * [`write_enum()`](Dumper::write_enum)
 /// * [`write_list()`](Dumper::write_list)
 /// * [`write_map()`](Dumper::write_map)
+#[derive(Debug)]
 pub struct Dumper<W>(W);
 
 impl<T> From<T> for Dumper<T>
@@ -41,6 +42,18 @@ where
 {
     fn from(t: T) -> Self {
         Dumper(t)
+    }
+}
+
+impl<W> AsRef<W> for Dumper<W> {
+    fn as_ref(&self) -> &W {
+        &self.0
+    }
+}
+
+impl<W> AsMut<W> for Dumper<W> {
+    fn as_mut(&mut self) -> &mut W {
+        &mut self.0
     }
 }
 

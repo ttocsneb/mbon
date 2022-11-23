@@ -1,18 +1,26 @@
 //! # Async Wrappers for Dumper and Parser
 //!
-//! Async wrappers are provided for [Dumper]: [AsyncDumper] and [Parser].
+//! > You need to enable the feature `async` to use these implementations.
+//!
+//! Async wrappers are provided for [Dumper]: [AsyncDumper] and [Parser]:
+//! [AsyncParser].
 //!
 //! [Dumper]: crate::dumper::Dumper
 //! [Parser]: crate::parser::Parser
 
+use std::io::SeekFrom;
 use std::mem;
 
-use crate::data::Value;
+use crate::data::{Mark, Type, Value};
 use crate::dumper::Dumper;
 use crate::error::Result;
-use crate::object::ObjectDump;
+use crate::object::{ObjectDump, ObjectParse};
+use crate::parser::Parser;
 
-use futures::AsyncWriteExt;
+use async_recursion::async_recursion;
+use byteorder::{BigEndian, ReadBytesExt};
+use futures::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 /// A wrapper for [Dumper](crate::dumper::Dumper).
@@ -28,7 +36,7 @@ use serde::Serialize;
 ///
 /// use mbon::async_wrapper::AsyncDumper;
 ///
-/// let mut writer = Cursor::new(vec![0u8; 5]);
+/// let writer = Cursor::new(vec![0u8; 5]);
 /// let mut dumper = AsyncDumper::from(writer);
 ///
 /// dumper.write(&15u32)?;
@@ -37,6 +45,7 @@ use serde::Serialize;
 /// assert_eq!(dumper.writer().into_inner(), b"i\x00\x00\x00\x0f");
 /// # Ok::<(), Box<dyn std::error::Error>>(()) }).unwrap();
 /// ```
+#[derive(Debug)]
 pub struct AsyncDumper<R> {
     writer: R,
     dumper: Dumper<Vec<u8>>,
@@ -51,6 +60,18 @@ where
             writer,
             dumper: Dumper::new(),
         }
+    }
+}
+
+impl<R> AsRef<R> for AsyncDumper<R> {
+    fn as_ref(&self) -> &R {
+        &self.writer
+    }
+}
+
+impl<R> AsMut<R> for AsyncDumper<R> {
+    fn as_mut(&mut self) -> &mut R {
+        &mut self.writer
     }
 }
 
@@ -291,6 +312,243 @@ where
     }
 }
 
-// TODO: Make a wrapper for Parser that can read a mark on its own, then read in
-// The expected number of characters from the mark, then call
-// Parser::next_data_value() with the data that was read
+/// A wrapper for [Parser](crate::parser::Parser).
+///
+/// AsyncParser reads from the reader into a buffer where Parser can parse the
+/// requested data. Every request for data will ask for exactly what's needed
+/// to perform the task.
+///
+/// ## Example
+///
+/// ```
+/// # futures::executor::block_on(async {
+/// use futures::io::Cursor;
+///
+/// use mbon::async_wrapper::AsyncParser;
+///
+/// let reader = Cursor::new(b"i\x00\x00\x00\x0f");
+/// let mut parser = AsyncParser::from(reader);
+///
+/// let val: u32 = parser.next().await?;
+///
+/// assert_eq!(val, 15);
+/// # Ok::<(), Box<dyn std::error::Error>>(()) }).unwrap();
+/// ```
+#[derive(Debug)]
+pub struct AsyncParser<R>(R);
+
+impl<R> From<R> for AsyncParser<R>
+where
+    R: AsyncReadExt + Unpin + Send,
+{
+    fn from(reader: R) -> Self {
+        Self(reader)
+    }
+}
+
+impl<R> AsRef<R> for AsyncParser<R> {
+    fn as_ref(&self) -> &R {
+        &self.0
+    }
+}
+
+impl<R> AsMut<R> for AsyncParser<R> {
+    fn as_mut(&mut self) -> &mut R {
+        &mut self.0
+    }
+}
+
+impl<R> AsyncParser<R>
+where
+    R: AsyncReadExt + Unpin + Send,
+{
+    /// Turn the parser into the underlying reader
+    #[inline]
+    pub fn reader(self) -> R {
+        self.0
+    }
+
+    /// Get the underlying reader as a reference
+    #[inline]
+    pub fn get_reader(&self) -> &R {
+        &self.0
+    }
+
+    /// Get the underlying reader as a mutable reference
+    #[inline]
+    pub fn get_reader_mut(&mut self) -> &mut R {
+        &mut self.0
+    }
+
+    /// Parse the next item in the parser.
+    #[inline]
+    pub async fn next<T>(&mut self) -> Result<T>
+    where
+        T: DeserializeOwned,
+    {
+        self.next_value().await?.parse()
+    }
+
+    /// Parse the next custom object in the parser.
+    ///
+    /// This allows you to be able to parse custom binary data. A common usecase
+    /// is to store a struct in a more compact form. You could also use object
+    /// values to store a different format altogether.
+    ///
+    /// Note: the next value in the parser must be an Object
+    ///
+    /// see [Parser::next_obj()](crate::parser::Parser::next_obj)
+    ///
+    #[inline]
+    pub async fn next_obj<T>(&mut self) -> Result<T>
+    where
+        T: ObjectParse,
+        <T as ObjectParse>::Error: std::error::Error + 'static,
+    {
+        self.next_value().await?.parse_obj()
+    }
+
+    async fn next_size(&mut self) -> Result<usize> {
+        let mut buf = [0u8; 4];
+        self.0.read_exact(&mut buf).await?;
+        Ok(buf.as_slice().read_u32::<BigEndian>()? as usize)
+    }
+
+    #[async_recursion]
+    async fn next_mark(&mut self) -> Result<Mark> {
+        // I don't particularly like this implementation as it redefines
+        // next_mark, but I don't see another way to know the size of the data
+        // without first getting the mark, and we can't get the size of the
+        // mark from the prefix as some marks are recursive.
+        let mut buf = [0u8; 1];
+        self.0.read_exact(&mut buf).await?;
+        let prefix = Type::from_prefix(buf[0])?;
+        Ok(match prefix {
+            Type::Long => Mark::Long,
+            Type::Int => Mark::Int,
+            Type::Short => Mark::Short,
+            Type::Char => Mark::Char,
+            Type::Float => Mark::Float,
+            Type::Double => Mark::Double,
+            Type::Bytes => Mark::Bytes(self.next_size().await?),
+            Type::Str => Mark::Str(self.next_size().await?),
+            Type::Object => Mark::Object(self.next_size().await?),
+            Type::Enum => Mark::Enum(Box::new(self.next_mark().await?)),
+            Type::Null => Mark::Null,
+            Type::Array => {
+                let mark = self.next_mark().await?;
+                let len = self.next_size().await?;
+                Mark::Array(len, Box::new(mark))
+            }
+            Type::List => Mark::List(self.next_size().await?),
+            Type::Dict => {
+                let kmark = self.next_mark().await?;
+                let vmark = self.next_mark().await?;
+                let len = self.next_size().await?;
+                Mark::Dict(len, Box::new(kmark), Box::new(vmark))
+            }
+            Type::Map => Mark::Map(self.next_size().await?),
+        })
+    }
+
+    /// Skip the next value in the parser.
+    ///
+    /// This will ignore the next value without parsing more than what's
+    /// necessary.
+    ///
+    /// If the reader supports seeking, then it is preffered to use
+    /// [`seek_next()`](AsyncParser::seek_next) instead.
+    ///
+    /// see [Parser::skip_next()](crate::parser::Parser::skip_next)
+    pub async fn skip_next(&mut self) -> Result<()> {
+        let mark = self.next_mark().await?;
+        let mut buf = vec![0u8; mark.data_size()];
+        self.0.read_exact(&mut buf).await?;
+        Ok(())
+    }
+
+    /// Parse the next value in the parser.
+    ///
+    /// see [Parser::next_value()](crate::parser::Parser::next_value)
+    pub async fn next_value(&mut self) -> Result<Value> {
+        let mark = self.next_mark().await?;
+        let mut buf = vec![0u8; mark.data_size()];
+        self.0.read_exact(&mut buf).await?;
+
+        let mut parser = Parser::from(&buf);
+        parser.next_data_value(&mark)
+    }
+}
+
+impl<R> AsyncParser<R>
+where
+    R: AsyncReadExt + AsyncSeekExt + Unpin + Send,
+{
+    /// Seek to the next value in the parser.
+    ///
+    /// This will efficiently skip the next value without reading more than
+    /// what's necessary
+    ///
+    /// see [Parser::seek_next()](crate::parser::Parser::seek_next)
+    pub async fn seek_next(&mut self) -> Result<()> {
+        let mark = self.next_mark().await?;
+        self.0
+            .seek(SeekFrom::Current(mark.data_size() as i64))
+            .await?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use futures::io::Cursor;
+
+    #[test]
+    fn test_parser() {
+        futures::executor::block_on(async {
+            let reader = Cursor::new(b"ac\x00\x00\x00\x04\x01\x02\x03\x04");
+            let mut parser = AsyncParser::from(reader);
+
+            let val: Vec<u8> = parser.next().await?;
+
+            assert_eq!(val, vec![1, 2, 3, 4]);
+            Ok::<(), Box<dyn std::error::Error>>(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn test_seek() {
+        futures::executor::block_on(async {
+            let reader = Cursor::new(
+                b"s\x00\x00\x00\x23This is a string I don't care abouti\x00\x00\x00\x20",
+            );
+            let mut parser = AsyncParser::from(reader);
+
+            parser.seek_next().await?;
+            let val: u32 = parser.next().await?;
+
+            assert_eq!(val, 32);
+            Ok::<(), Box<dyn std::error::Error>>(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn test_skip() {
+        futures::executor::block_on(async {
+            let reader = Cursor::new(
+                b"s\x00\x00\x00\x23This is a string I don't care abouti\x00\x00\x00\x20",
+            );
+            let mut parser = AsyncParser::from(reader);
+
+            parser.skip_next().await?;
+            let val: u32 = parser.next().await?;
+
+            assert_eq!(val, 32);
+            Ok::<(), Box<dyn std::error::Error>>(())
+        })
+        .unwrap();
+    }
+}

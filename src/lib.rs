@@ -126,7 +126,41 @@
 //!
 //! assert_eq!(foo, new_foo);
 //! ```
+//!
+//! ### Async Implementations
+//!
+//! If you want to parse data asynchronously, you may want to use the provided
+//! wrappers: [async_wrapper::AsyncDumper], [async_wrapper::AsyncParser].
+//!
+//! > You need to enable the feature `async` to use these implementations.
+//!
+//! ```
+//! # #[cfg(feature = "async")] {
+//! # futures::executor::block_on(async {
+//! use futures::io::{AsyncWriteExt, Cursor};
+//!
+//! use mbon::async_wrapper::{AsyncDumper, AsyncParser};
+//!
+//! let writer = Cursor::new(vec![0u8; 5]);
+//! let mut dumper = AsyncDumper::from(writer);
+//!
+//! dumper.write(&15u32)?;
+//! dumper.flush().await?;
+//!
+//! let mut reader = dumper.writer();
+//! reader.set_position(0);
+//!
+//! let mut parser = AsyncParser::from(reader);
+//!
+//! let val: u32 = parser.next().await?;
+//!
+//! assert_eq!(val, 15);
+//! # Ok::<(), Box<dyn std::error::Error>>(()) }).unwrap();
+//! # }
+//! ```
+//!
 
+#[cfg(feature = "async")]
 pub mod async_wrapper;
 pub mod data;
 pub mod dumper;

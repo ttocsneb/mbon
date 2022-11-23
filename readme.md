@@ -23,8 +23,8 @@ item, e.g. A 1GB value can be easily skipped by only reading the mark.
 
 ### Dumping
 
-You can dump binary data using the [Dumper] struct. You can write values
-directly or use serde's serialize to write more complex data.
+You can dump binary data using the [dumper::Dumper][Dumper] struct. You can 
+write values directly or use serde's serialize to write more complex data.
 
 [Dumper]: https://docs.rs/mbon/latest/mbon/dumper/struct.Dumper.html
 
@@ -46,8 +46,8 @@ assert_eq!(output, b"i\x00\x00\x00\x20s\x00\x00\x00\x0bHello Worldca");
 
 ### Parsing
 
-You can parse binary data using the [Parser] struct. You can parse Value's
-directly, but it is recommended to use serde to parse data.
+You can parse binary data using the [parser::Parser][Parser] struct. You can 
+parse Value's directly, but it is recommended to use serde to parse data.
 
 [Parser]: https://docs.rs/mbon/latest/mbon/parser/struct.Parser.html
 
@@ -76,11 +76,12 @@ assert_eq!(c, b'a');
 ### Embedded Objects
 
 If you are wanting to embed a predefined object inside the format, you can
-impl [ObjectDump]/[ObjectParse]. Keep in mind that you will need to call
-write_obj/parse_obj to take advantage of it.
+impl [object::ObjectDump][ObjectDump]/[object::ObjectParse][ObjectParse]. Keep 
+in mind that you will need to call `write_obj()`/`parse_obj()` to take 
+advantage of it.
 
-[ObjectDump]: https://docs.rs/mbon/0.1.1/mbon/object/trait.ObjectDump.html
-[ObjectParse]: https://docs.rs/mbon/0.1.1/mbon/object/trait.ObjectParse.html
+[ObjectDump]: https://docs.rs/mbon/latest/mbon/object/trait.ObjectDump.html
+[ObjectParse]: https://docs.rs/mbon/latest/mbon/object/trait.ObjectParse.html
 
 ```rust
 use mbon::parser::Parser;
@@ -134,6 +135,36 @@ let mut parser = Parser::from(&buf);
 let new_foo: Foo = parser.next_obj().unwrap();
 
 assert_eq!(foo, new_foo);
+```
+
+### Async Implementations
+
+If you want to parse data asynchronously, you may want to use the provided
+wrappers: [async_wrapper::AsyncDumper][AsyncDumper],
+[async_wrapper::AsyncParser][AsyncParser].
+
+[AsyncDumper]: https://docs.rs/mbon/latest/mbon/async_wrapper/struct.AsyncDumper.html
+[AsyncParser]: https://docs.rs/mbon/latest/mbon/async_wrapper/struct.AsyncParser.html
+
+```rust
+use futures::io::{AsyncWriteExt, Cursor};
+
+use mbon::async_wrapper::{AsyncDumper, AsyncParser};
+
+let writer = Cursor::new(vec![0u8; 5]);
+let mut dumper = AsyncDumper::from(writer);
+
+dumper.write(&15u32)?;
+dumper.flush().await?;
+
+let mut reader = dumper.writer();
+reader.set_position(0);
+
+let mut parser = AsyncParser::from(reader);
+
+let val: u32 = parser.next().await?;
+
+assert_eq!(val, 15);
 ```
 
 ## Grammar

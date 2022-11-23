@@ -31,12 +31,24 @@ where
     }
 }
 
-impl<T> From<T> for Parser<T>
+impl<R> From<R> for Parser<R>
 where
-    T: Read,
+    R: Read,
 {
-    fn from(reader: T) -> Self {
+    fn from(reader: R) -> Self {
         Self(reader)
+    }
+}
+
+impl<R> AsRef<R> for Parser<R> {
+    fn as_ref(&self) -> &R {
+        &self.0
+    }
+}
+
+impl<R> AsMut<R> for Parser<R> {
+    fn as_mut(&mut self) -> &mut R {
+        &mut self.0
     }
 }
 
@@ -44,7 +56,27 @@ impl<R> Parser<R>
 where
     R: Read,
 {
+    /// Turn the parser into the underlying reader
+    #[inline]
+    pub fn reader(self) -> R {
+        self.0
+    }
+
+    /// Get the the underlying reader as a reference
+    #[inline]
+    pub fn get_reader(&self) -> &R {
+        &self.0
+    }
+
+    /// Get the the underlying reader as a mutable reference
+    #[inline]
+    pub fn get_reader_mut(&mut self) -> &mut R {
+        &mut self.0
+    }
+
     /// Parse the next item in the parser.
+    ///
+    /// ### Example
     ///
     /// ```
     /// use mbon::parser::Parser;
@@ -69,6 +101,8 @@ where
     /// values to store a different format altogether.
     ///
     /// Note: the next value in the parser must be an Object
+    ///
+    /// ### Example
     ///
     /// ```
     /// use mbon::error::Error;
@@ -238,7 +272,7 @@ where
         Ok(arr)
     }
 
-    fn next_data_value(&mut self, mark: &Mark) -> Result<Value, Error> {
+    pub(crate) fn next_data_value(&mut self, mark: &Mark) -> Result<Value, Error> {
         Ok(match mark {
             Mark::Long => Value::Long(self.next_data_long()?),
             Mark::Int => Value::Int(self.next_data_int()?),
@@ -299,6 +333,8 @@ where
     /// If the reader supports seeking, then it is preffered to use
     /// [`seek_next()`](Parser::seek_next) instead.
     ///
+    /// ### Example
+    ///
     /// ```
     /// use mbon::parser::Parser;
     ///
@@ -324,6 +360,8 @@ where
     ///
     /// This will try to read whatever value is next and return it.
     ///
+    /// ### Example
+    ///
     /// ```
     /// use mbon::parser::Parser;
     /// use mbon::data::Value;
@@ -348,6 +386,23 @@ where
     /// This will efficiently skip the next value without reading more than
     /// what's necessary.
     ///
+    /// ### Example
+    ///
+    /// ```
+    /// use mbon::parser::Parser;
+    /// use std::io::Cursor;
+    ///
+    /// let reader = Cursor::new(
+    ///     b"s\x00\x00\x00\x23This is a string I don't care abouti\x00\x00\x00\x20"
+    /// );
+    ///
+    /// let mut parser = Parser::from(reader);
+    ///
+    /// parser.seek_next().unwrap();
+    /// let val: u32 = parser.next().unwrap();
+    ///
+    /// assert_eq!(val, 32);
+    /// ```
     pub fn seek_next(&mut self) -> Result<(), Error> {
         let mark = self.next_mark()?;
         let size = mark.data_size();
