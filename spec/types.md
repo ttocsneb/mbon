@@ -4,6 +4,13 @@ In mbon, data is made out of items. These items are made of two parts: A
 mark, and a value. Unless otherwise specified, an item is always a mark followed
 by data. 
 
+> All grammars in this document are written with the [pest] grammar language.
+
+[pest]: https://pest.rs/book/
+
+> There are several blocks of code which are written in a pseudo-code of rust.
+> It will use a familiar rust syntax, but will likely not compile.
+
 ## Size
 
 Some marks have a size indicator. This indicator is dynamically sized. The
@@ -13,15 +20,17 @@ The indicator starts at one byte in length. There is a continuation bit in each
 byte of the indicator. This is the most significant bit in each byte. If it is
 1, then there is more to read, otherwise the size indicator is finished.
 
+When reading a size indicator, the most significant bit of each byte is ignored.
+The value is read as a little-endian unsigned integer. Overall, sizes may not be
+larger than 64 bits or 10 characters.
+
+### Size Grammar
+
 ```rust
 SizeEnd      = { '\x00'..'\x7f' } // 0b0000_0000 through 0b0111_1111
 SizeContinue = { '\x80'..'\xff' } // 0b1000_0000 through 0b1111_1111
 Size = { SizeContinue ~ Size | SizeEnd }
 ```
-
-When reading a size indicator, the most significant bit of each byte is ignored.
-The value is read as a little-endian unsigned integer. Overall, sizes may not be
-larger than 64 bits or 10 characters.
 
 ### Examples
 
@@ -35,332 +44,438 @@ so we read the next byte (hex)`06` (bin)`0 0000011`. We add
 `0b0000011 << (1 * 7)` to the sum and get `0x1b3`. The most significant bit is
 0, so we are done with a final size of 435.
 
-## U8
+## IDs
 
-A u8 data type is represented by the id `b`. There is nothing more to the
-mark. 
+Every item has an id to identify its type. This is a single byte which is used
+to know what the type is. There are five parts to an id:  E, P, S, T and B.
 
-The data represented is an unsigned 8-bit integer.
+* E bit 7: whether there is a body associated with the type.
+* P bit 6: whether the type is publicly available.
+* S bit 5: whether the type has a fixed size.
+* T bits 2-4: the type id (which is only unique to each E, P, S combination)
+* B bits 0-1: The number of bytes in the fixed size value (which is `2^B`).
 
-The length of a u8 is always 1.
+Below is a diagram of how the bits are structured in the id byte as well as some
+pseudo-code definitions that will be used in type descriptions.
 
-## I8
+```
+7 6 5 432 10
+E P S TTT BB
+```
 
-An i8 data type is represented by the id `B`. There is nothing more to the
-mark. 
+```rust
+let E = 1u8 << 7;
+let P = 1u8 << 6;
+let S = 1u8 << 5;
+let T = |v: u8| (v << 2) & 0b0001_1100;
+let B = |v: u8| v & 0b0000_0011;
+let b_iter = |r: Range<u8>, id: u8| r.map(|v| id | B(v)).collect::<Vec<u8>>();
+let len_b = |id: u8| 2u8.pow(id & 0b0000_0011);
+```
 
-The data represented is a signed 8-bit integer.
+## Types
 
-The length of an i8 is always 1.
+[Null]: #null
+[Unsigned]: #unsigned
+[Signed]: #signed
+[Float]: #float
+[Char]: #char
+[String]: #string
+[Array]: #array
+[List]: #list
+[Struct]: #struct
+[Map]: #map
+[Enum]: #enum
+[Space]: #space
+[Padding]: #padding
+[Pointer]: #pointer
+[Rc]: #rc
+[Heap]: #heap
 
-## U16
+Below are definitions of all the mbon types. 
 
-A u16 data type is represented by the id `h`. There is nothing more to the
-mark. 
+### Null
 
-The data represented is a little-endian unsigned 16-bit integer.
+A null data type is represented by the id (hex)`c0`. There is nothing more to
+the mark.
 
-The length of a u16 is always 2.
+There is no data associated with the null type.
 
-## I16
+```rust
+let id = E | P | T(0); // 0xc0
+let len = 0;
+```
 
-An i16 data type is represented by the id `H`. There is nothing more to the
-mark. 
+#### Null Grammar
 
-The data represented is a little-endian signed 16-bit integer.
+```rust
+MarkNull = { "\xc0" }
+```
 
-The length of an i16 is always 2.
+### Unsigned
 
-## U32
+The unsigned data type is represented by the ids (hex)`64 65 66 67`. There is
+nothing more to the mark.
 
-A u32 data type is represented by the id `i`. There is nothing more to the
-mark. 
+The data is a little-endian unsigned integer of `len_b(id)` bytes.
 
-The data represented is a little-endian unsigned 32-bit integer.
+* `64`: 1-byte (u8)
+* `65`: 2-byte (u16)
+* `66`: 4-byte (u32)
+* `67`: 8-byte (u64)
 
-The length of a u32 is always 4.
+```rust
+let id = b_iter(0..4, P | S | T(1)); // [0x64, 0x65, 0x66, 0x67]
+let len = len_b(id);
+```
 
-## I32
+#### Unsigned Grammar
 
-An i32 data type is represented by the id `I`. There is nothing more to the
-mark. 
+```rust
+MarkU8  = { "\x64" }
+MarkU16 = { "\x65" }
+MarkU32 = { "\x66" }
+MarkU64 = { "\x67" }
+MarkUnsigned = { MaarkU8 | MarkU16 | MarkU32 | MarkU64 }
+```
 
-The data represented is a little-endian signed 32-bit integer.
+### Signed
 
-The length of an i32 is always 4.
+The signed data type is represented by the ids (hex)`68 69 6a 6b`. There is
+nothing more to the mark.
 
-## U64
+The data is a little-endian signed integer of `len_b(id)` bytes.
 
-A u64 data type is represented by the id `l`. There is nothing more to the
-mark. 
+* `68`: 1-byte (i8)
+* `69`: 2-byte (i16)
+* `6a`: 4-byte (i32)
+* `6b`: 8-byte (i64)
 
-The data represented is a little-endian unsigned 64-bit integer.
+```rust
+let id = b_iter(0..4, P | S | T(2)); // [0x68, 0x69, 0x6a, 0x6b]
+let len = len_b(id);
+```
 
-The length of a u64 is always 8.
+#### Signed Grammar
 
-## I64
+```rust
+MarkI8  = { "\x68" }
+MarkI16 = { "\x69" }
+MarkI32 = { "\x6a" }
+MarkI64 = { "\x6b" }
+MarkSigned = { MaarkI8 | MarkI16 | MarkI32 | MarkI64 }
+```
 
-An i64 data type is represented by the id `L`. There is nothing more to the
-mark. 
+### Float
 
-The data represented is a little-endian signed 64-bit integer.
+The signed data type is represented by the ids (hex)`6e 6f`. There is
+nothing more to the mark.
 
-The length of an i64 is always 8.
+The data is a little-endian IEEE-754 float of `len_b(id)` bytes.
 
-## F32
+* `6e`: 4-byte (f32)
+* `6f`: 8-byte (f64)
 
-An f32 data type is represented by the id `f`. There is nothing more to the
-mark. 
+```rust
+let id = b_iter(2..4, P | S | T(3)); // [0x6e, 0x6f]
+let len = len_b(id);
+```
 
-The data represented is a little-endian IEEE-754 float.
+#### Float Grammar
 
-The length of an f32 is always 4.
-
-## F64
-
-An i64 data type is represented by the id `F`. There is nothing more to the
-mark. 
-
-The data represented is a little-endian IEEE-754 double.
-
-The length of an f64 is always 8.
-
-## Null
-
-A null data type is represented by the id `n`. There is nothing more to the
-mark. 
-
-There is no data associated with a null.
-
-The length of a null is always 0.
-
-## Chars
-
-Characters are all represented by UTF code points. A majority of english
-characters fit within the 8-bit range of a byte. In many other languages, most
-will fit within 16-bits. And all characters can fit within 32-bits.
-
-It is possible to have characters represented by UTF-8, but that would require a
-size indicator in the mark to know how long the character is. A better option
-would be to have 3 char types each with different sizes to accommodate for all
-possible characters without wasting unused space.
-
-### Small Char
-
-A char data type is represented by the id `c`. There is nothing more to the
-mark. The data represented is a unsigned 8-bit integer which represents a UTF
-code point. If the code point doesn't fit within an 8-bit value, then Char or
-Big Char should be used instead.
-
-The length of a small char is always 1.
+```rust
+MarkF32 = { "\x6e" }
+MarkF64 = { "\x6f" }
+MarkFloat = {  MarkF32 | MarkF64 }
+```
 
 ### Char
 
-A char data type is represented by the id `C`. There is nothing more to the
-mark. The data represented is a little-endian unsigned 16-bit integer which
-represents a UTF code point. If the code point doesn't fit within a 16-bit
-value, then Big Char should be used instead.
+The char data type is represented by the ids (hex)`70 71 72`. There is nothing
+more to the mark.
 
-The length of a char is always 2.
+The data is a little-endian unsigned integer of `len_b(id)` bytes which represent
+a UTF code point.
 
-### Big Char
+* `70`: 1-byte (u8 char)
+* `71`: 2-byte (u16 char)
+* `72`: 4-byte (u32 char)
 
-A char data type is represented by the id `G`. There is nothing more to the
-mark. The data represented is a little-endian unsigned 32-bit integer which
-represents a UTF code point.
+```rust
+let id = b_iter(2..3, P | S | T(4)); // [0x70, 0x71, 0x72]
+let len = len_b(id);
+```
 
-The length of a big char is always 4.
+#### Char Grammar
 
-## String
+```rust
+MarkC8  = { "\x70" }
+MarkC16 = { "\x71" }
+MarkC32 = { "\x72" }
+MarkChar = {  MarkC8 | MarkC16 | MarkC32 }
+```
 
-A string data type is represented by the id `s`. After the id, is a size
+### String
+
+A string data type is represented by the id (hex)`54`. After the id, is a size
 indicator we will call `L`.
 
 The data represented by a string is a UTF-8 encoded string of `L` bytes.
 
-The length of a string is `L`.
+```rust
+let id = P | T(5); // 0x54
+let len = L;
+```
 
-## Array
+#### String Grammar
 
-An array data type is represented by the id `a`. After the id is a recursive
-mark we will call `I`. After `I` is a size indicator we will call `N`.
+```rust
+MarkString = { "\x54" ~ Size }
+```
 
-The data represented by an array is a sequence of `N` data items of type `I`. No
-marks are required for each sub-item since it has already been defined by `I`.
+### Array
 
-The length of an array is `Len(I) * N`.
+An array data type is represented by the id (hex)`40`. After the id is a
+recursive mark we will call `V`. After `V` is a size indicator we will call `N`.
 
-## List
+The data represented by an array is a sequence of `N` data items of type `V`. No
+marks are required for each sub-item since it has already been defined by `V`.
 
-A list data type is represented by the id `A`. After the id is a size indicator
-we will call `L`.
+Note that all values in the array must be homogeneous. This severely limits what
+can be used for an array. If an item cannot be stored in an array, then [List]
+should be used instead.
+
+```rust
+let id = P | T(0); // 0x40
+let len = data_len(V) * N;
+```
+
+#### Array Grammar
+
+```rust
+MarkArray = { "\x40" ~ Mark ~ Size }
+```
+
+### List
+
+A list data type is represented by the id (hex)`44`. After the id is a size
+indicator we will call `L`.
 
 The data represented by a list is a sequence of items where the total size of
 all the items add up to `L` e.g. The contents of the list must be exactly `L`
 bytes long.
 
-The length of an list is `L`.
+```rust
+let id = P | T(1); // 0x44
+let len = L;
+```
 
-## Dict
+#### List Grammar
 
-A dict data type is represented by the id `d`. After the id is two marks we will
-call `K` and `V` respectively. After `V` is a size indicator we will call `N`.
+```rust
+MarkList = { "\x44" ~ Size }
+```
 
-The data represented by a dict is a sequence of `N` pairs of `K`-`V` data
-items. No marks are required for each sub-item since they have already been
-defined by `K` and `V`. There are a total of `N * 2` items in a dict and each
-pair of items are `K` then `V`.
+### Struct
 
-The length of a dict is `(Len(K) + Len(V)) * N`.
+A struct data type is represented by the id (hex)`40`. After the id is two marks
+we will call `K` and `V` respectively. After `V` is a size indicator we will
+call `N`.
 
-## Map
+The data represented by a struct is a sequence of `N` pairs of `K`-`V` data
+items. No marks are required for each of these items since they have already
+been defined by `K` and `V`. There are a total of `N * 2` items in a dict and
+each pair of items are `K` then `V`.
 
-A map data type is represented by the id `D`. After the id is a size indicator
-we will call `L`.
+Note that all values in the struct must be homogeneous. This severely limits
+what can be used for a struct. If an item cannot be stored in a struct, then
+[Map] should be used instead.
+
+```rust
+let id = P | T(2); // 0x48
+let len = (data_len(K) + data_len(V)) * N;
+```
+
+#### Struct Grammar
+
+```rust
+MarkStruct = { "\x48" ~ Mark ~ Mark ~ Size }
+```
+
+### Map
+
+A map data type is represented by the id (hex)`4c`. After the id is a size
+indicator we will call `L`.
 
 The data represented by a map is a sequence of pairs of items in a key-value
 structure. There must be an even number of items in a map, and the total length
 of the data must be equal to `L`.
 
-The length of a map is `L`.
+```rust
+let id = P | T(3); // 0x4c
+let len = L;
+```
 
-## Small Enum
+#### Map Grammar
 
-A small enum data type is represented by the id `e`. After the id is a recursive
-mark we will call `V`.
+```rust
+MarkMap = { "\x4c" ~ Size }
+```
 
-The data represented by a small enum is an unsigned 8-bit integer that
-represents the variant of the enum. After the variant is the data for `V`. No
-mark is required since `V` has already been defined.
+### Enum
 
-The length of a small enum is `1 + Len(V)`.
+The enum data type is represented by the ids (hex)`74 75 76`. After the id is
+a recursive mark we will call `V`.
 
-## Enum
+The data represented by the enum is a little-endian unsigned integer with
+`len_b(id)` bytes which represents the variant of the enum. After the variant
+value is the data of `V`. No mark is required since `V` has already been defined
 
-An enum data type is represented by the id `E`. After the id is a recursive
-mark we will call `V`.
+* `74`: 1-byte (u8 variant)
+* `75`: 2-byte (u16 variant)
+* `76`: 4-byte (u32 variant)
 
-The data represented by a small enum is a little-endian unsigned 16-bit integer
-that represents the variant of the enum. After the variant is the data for `V`.
-No mark is required since `V` has already been defined.
+```rust
+let id = b_iter(0..3, P | S | T(5)); // [0x74, 0x75, 0x76]
+let len = len_b(id) + data_len(v);
+```
 
-The length of an enum is `2 + Len(V)`.
+#### Enum Grammar
 
-## Big Enum
+```rust
+MarkE8  = { "\x74"}
+MarkE16 = { "\x75" }
+MarkE32 = { "\x76" }
+MarkEnum = { (MarkE8 | MarkE16 | MarkE32) ~ Mark }
+```
 
-A big enum data type is represented by the id `U`. After the id is a recursive
-mark we will call `V`.
+### Space
 
-The data represented by a small enum is a little-endian unsigned 32-bit integer
-that represents the variant of the enum. After the variant is the data for `V`.
-No mark is required since `V` has already been defined.
+The space type is represented by the id (hex)`80`. There is nothing more to the
+mark.
 
-The length of an enum is `4 + Len(V)`.
+There is no data associated with space.
 
-## Implicit Types
+The space type is used as padding between items if needed. Whenever possible,
+[Padding] should be preferred.
 
-There are a few types that are not exposed to the user. These are designed to
-help optimize the file for I/O. A more detailed discussion about I/O
-optimizations will be discussed somewhere else _TODO_.
+```rust
+let id = E | T(0); // 0x80
+let len = 0;
+```
 
-### Small Pointer
+#### Space Grammar
 
-A small pointer data type is represented by the id `p`. There is nothing more to
-the mark.
+```rust
+MarkSpace = { "\x80" }
+```
 
-The data of the small pointer is a little-endian unsigned 16-bit integer which
-represents a location within the file where the value can be found.
+### Padding
 
-The length of a small pointer is always 2.
+The padding type is represented by the id (hex)`04`. After the id is a size
+indicator we will call `L`.
+
+The data of a reserved item is `L` bytes of unused space. The contents should
+not be read from since it will be considered junk. 
+
+```rust
+let id = T(1); // 0x04
+let len = L;
+```
+
+#### Padding Grammar
+
+```rust
+MarkPadding = { "\x04" ~ Size }
+```
 
 ### Pointer
 
-A pointer data type is represented by the id `P`. There is nothing more to the
-mark.
+The pointer type is represented by the ids (hex)`28 29 2a 2b`. There is nothing
+else to the mark.
 
-The data of the small pointer is a little-endian unsigned 32-bit integer which
-represents a location within the file where the value can be found.
+The data of a pointer is a little-endian unsigned integer with `len_b(id)` bytes
+which represent a location in the mbon file we will call `P`. The contents at
+`P` must be the start of a valid mbon item. 
 
-The length of a pointer is always 4.
+* `28`: 1-byte (u8 address)
+* `29`: 2-byte (u16 address)
+* `2a`: 4-byte (u32 address)
+* `2b`: 8-byte (u64 address)
 
-### Big Pointer
+```rust
+let id = b_iter(0..4, S | T(2)); // [0x28, 0x29, 0x2a, 0x2b]
+let len = len_b(id);
+```
 
-A pointer data type is represented by the id `T`. There is nothing more to the
-mark.
+#### Pointer Grammar
 
-The data of the small pointer is a little-endian unsigned 64-bit integer which
-represents a location within the file where the value can be found.
-
-The length of a big pointer is always 8.
-
-### Reserved
-
-A reserved data type is represented by the id `r`. After the id is a size
-indicator we will call `L`.
-
-The data of the reserved item is unknown. This data should not be read from. The
-only requirement is that there must be `L` bytes of data.
-
-The length of reserved space is `L`.
-
-### Empty
-
-An empty data type is represented only by the id `\x00`. There is nothing more
-to the mark and there is no data associated with an empty.
-
-Empty is designed to be used in a similar way to reserved, but where reserved
-cannot fit.
-
-The length of empty is always `0`.
+```rust
+MarkP8  = { "\x28" }
+MarkP16 = { "\x29" }
+MarkP32 = { "\x2a" }
+MarkP64 = { "\x2b" }
+MarkPointer = { MarkP8 | MarkP16 | MarkP32 | MarkP64 }
+```
 
 ### Rc
 
-An rc is a pointer receiver that counts how many references there are to it.
+The rc type is represented by the ids (hex)`2c 2d 2e 2f`. After the id is a mark
+we will call `V`.
 
-#### Small Rc
+The data of an rc is a little-endian unsigned integer with `len_b(id)` bytes
+that represents the number of references to this item. After which is the data
+for `V`. No mark is required since `V` has already been defined.
 
-A small rc data type is represented by the id `x`. After the id is a mark we
-will call `V`.
+Rc's should always be used alongside pointers. They should be treated like an
+invisible box most of the time; Only when doing pointer operations should rc's
+be considered.
 
-The data of a small rc is a 1-byte unsigned integer that represents the number
-of references to the value. After this is the data value `V`.
+* `2c`: 1-byte (u8 variant)
+* `2d`: 2-byte (u16 variant)
+* `2e`: 4-byte (u32 variant)
+* `2f`: 8-byte (u64 variant)
 
-The length of small rc is `1 + Len(V)`
+```rust
+let id = b_iter(0..4, S | T(3)); // [0x2c, 0x2d, 0x2e, 0x2f]
+let len = len_b(id) + data_len(V);
+```
 
-#### Rc
+#### Rc Grammar
 
-An rc data type is represented by the id `X`. After the id is a mark we will
-call `V`.
-
-The data of a small rc is a 2-byte little-endian unsigned integer that
-represents the number of references to the value. After this is the data value
-`V`.
-
-The length of rc is `2 + Len(V)`
-
-#### Big Rc
-
-An big rc data type is represented by the id `y`. After the id is a mark we will
-call `V`.
-
-The data of a small rc is a 4-byte little-endian unsigned integer that
-represents the number of references to the value. After this is the data value
-`V`.
-
-The length of big rc is `4 + Len(V)`
+```rust
+MarkR8  = { "\x2c" }
+MarkR16 = { "\x2d" }
+MarkR32 = { "\x2e" }
+MarkR64 = { "\x2f" }
+MarkRc = { (MarkR8 | MarkR16 | MarkR32 | MarkR64) ~ Mark }
+```
 
 ### Heap
 
-A heap data type is represented by the id `k`. After the id is a size indicator
-we will call `L`.
+The heap type is represented by the id (hex)`10`. After the id is a size
+indicator we will call `L`.
 
-The data of the heap is a sequence of reserved, empty, small rc, rc, or big rc.
-This is reserved for pointer values. The contents of the heap must be exactly
-`L` bytes long.
+The data of the heap is a sequence of items where the total size of all the
+items add up to `L`.
 
-The length of the heap is `L`.
+The contents of the heap are hidden from the user, in other words it should be
+treated like padding, but with valid data inside. The only way the user can
+access items in the heap is through [Pointer]s. The heap should be a root level
+item of the mbon file. 
 
-# Mark Grammar
+```rust
+let id = T(4); // 0x10
+let len = L;
+```
+
+#### Heap Grammar
+
+```rust
+MarkHeap = { "\x10" ~ Size }
+```
+
+# Full Mark Grammar
 
 Below is a comprehensive grammar for marks in the mbon format.
 
@@ -369,61 +484,71 @@ SizeEnd      = { '\x00'..'\x7f' } // 0b0......
 SizeContinue = { '\x80'..'\xff' } // 0b1......
 Size = { SizeContinue ~ Size | SizeEnd }
 
-MarkU8   = { "b" }
-MarkI8   = { "B" }
-MarkU16  = { "h" }
-MarkI16  = { "H" }
-MarkU32  = { "i" }
-MarkI32  = { "I" }
-MarkU64  = { "l" }
-MarkI64  = { "L" }
-MarkF32  = { "f" }
-MarkF64  = { "F" }
-MarkNull = { "n" }
-
-MarkSmallChar = { "c" }
-MarkChar      = { "C" }
-MarkBigChar   = { "G" }
-
-MarkStr  = { "s" ~ Size }
-MarkArr  = { "a" ~ Mark ~ Size }
-MarkList = { "A" ~ Size }
-MarkDict = { "d" ~ Mark ~ Mark ~ Size }
-MarkMap  = { "D" ~ Size }
-
-MarkSmallEnum = { "e" ~ Mark }
-MarkEnum      = { "E" ~ Mark }
-MarkBigEnum   = { "U" ~ Mark }
-
-MarkSmallPtr = { "p" }
-MarkPtr      = { "P" }
-MarkBigPtr   = { "T" }
-
-MarkReserved = { "r" ~ Size }
-MarkEmpty    = { "\x00" }
-
-MarkSmallRc  = { "x" ~ Mark }
-MarkRc       = { "X" ~ Mark }
-MarkBigRc    = { "y" ~ Mark }
-
-MarkHeap     = { "k" ~ Size }
-
 Mark = {
-      MarkU8  | MarkI8 
-    | MarkU16 | MarkI16 
-    | MarkU32 | MarkI32 
-    | MarkU64 | MarkI64
-    | MarkF32 | MarkF64 
-    | MarkNull 
-    | MarkSmallChar | MarkChar | MarkBigChar
-    | MarkStr
-    | MarkArr  | MarkList
-    | MarkDict | MarkMap
-    | MarkSmallEnum | MarkEnum | MarkBigEnum
-    | MarkSmallPtr  | MarkPtr  | MarkBigPtr
-    | MarkEmpty | MarkEmtpy
-    | MarkSmallRc | MarkRc | MarkBigRc
-    | MarkHeap
+        MarkNull 
+      | MarkUnsigned | MarkSigned | MarkFloat 
+      | MarkChar     | MarkString 
+      | MarkArray    | MarkList 
+      | MarkStruct   | MarkMap 
+      | MarkEnum 
+      | MarkSpace    | MarkPadding 
+      | MarkPointer  | MarkRc     | MarkHeap
 }
 
+MarkNull = { "\xc0" }
+
+MarkU8       = { "\x64" }
+MarkU16      = { "\x65" }
+MarkU32      = { "\x66" }
+MarkU64      = { "\x67" }
+MarkUnsigned = { MaarkU8 | MarkU16 | MarkU32 | MarkU64 }
+
+MarkI8     = { "\x68" }
+MarkI16    = { "\x69" }
+MarkI32    = { "\x6a" }
+MarkI64    = { "\x6b" }
+MarkSigned = { MaarkI8 | MarkI16 | MarkI32 | MarkI64 }
+
+MarkF32   = { "\x6e" }
+MarkF64   = { "\x6f" }
+MarkFloat = {  MarkF32 | MarkF64 }
+
+MarkC8   = { "\x70" }
+MarkC16  = { "\x71" }
+MarkC32  = { "\x72" }
+MarkChar = {  MarkC8 | MarkC16 | MarkC32 }
+
+MarkString = { "\x54" ~ Size }
+
+MarkArray  = { "\x40" ~ Mark ~ Size }
+
+MarkList   = { "\x44" ~ Size }
+
+MarkStruct = { "\x48" ~ Mark ~ Mark ~ Size }
+
+MarkMap    = { "\x4c" ~ Size }
+
+MarkE8   = { "\x74"}
+MarkE16  = { "\x75" }
+MarkE32  = { "\x76" }
+MarkEnum = { (MarkE8 | MarkE16 | MarkE32) ~ Mark }
+
+MarkSpace   = { "\x80" }
+
+MarkPadding = { "\x04" ~ Size }
+
+MarkP8      = { "\x28" }
+MarkP16     = { "\x29" }
+MarkP32     = { "\x2a" }
+MarkP64     = { "\x2b" }
+MarkPointer = { MarkP8 | MarkP16 | MarkP32 | MarkP64 }
+
+MarkR8  = { "\x2c" }
+MarkR16 = { "\x2d" }
+MarkR32 = { "\x2e" }
+MarkR64 = { "\x2f" }
+MarkRc  = { (MarkR8 | MarkR16 | MarkR32 | MarkR64) ~ Mark }
+
+MarkHeap = { "\x10" ~ Size }
 ```
+
