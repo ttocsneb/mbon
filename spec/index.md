@@ -11,5 +11,6 @@ implementations should behave with the data.
 
 * [File Structure](file-structure.md)
 * [Types](types.md)
-
+* [Behaviour](behaviour.md)
+* [Examples](examples.md)
 

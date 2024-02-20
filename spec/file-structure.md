@@ -4,7 +4,7 @@ An mbon file is made up of two parts: A header, and the content.
 
 ## Header
 
-The header begins with this 8-byte signature (hex)`EE 6D 62 6E 0D 0A 1A 00`.
+The header begins with this 8-byte signature (hex)`EE 6D 62 6F 6E 0D 0A 00`.
 After the signature is a single byte version number, currently (hex)`01`.
 
 The signature comes from the PNG signature and the explanation will be repeated
@@ -23,25 +23,42 @@ here.
 The 8-byte signature of mbon in decimal, hex and ascii is
 
 ```
-(dec)    238  109   98  110   13   10   26    0
-(hex)     EE   6D   62   6E   0D   0A   1A   00
-(ascii) \356    m    b    n   \r   \n \032   \0
+(dec)    238  109   98  111  110   13   10    0
+(hex)     EE   6D   62   6F   6E   0D   0A   00
+(ascii) \356    m    b    o    n   \r   \n   \0
 ```
 
 Like the png signature, this signature aims to have a unique value that can be
 used to know that the file is an mbon file without relying on an extension as
-well as determine if the file has encountered problems in transfer.
+well as determine if the file has encountered common problems in transfer.
 
 After the header immediately begins the main content of the file.
 
 ## Content
 
-The content of an mbon file may be a sequence of items much like a list. After
-the primary contents of the file may be a heap of pointer data. This is a single
-heap value.
+The content of an mbon file is a sequence of items much like a [List]. Along
+with the items can be [Heap] items. These are hidden from the user, but is used
+to store data outside of the main item tree.
 
-In order to allow for the main content to grow, it is recommended that the
-heap leaves a buffer of reserved data at the beginning of the heap.
+If heaps are used, they should have padding that would allow for the main item
+tree to grow.
 
 Descriptions of the different types available are available at
-[types.md](types.md).
+[types](types.md).
+
+[Null]:     types.md#null
+[Unsigned]: types.md#unsigned
+[Signed]:   types.md#signed
+[Float]:    types.md#float
+[Char]:     types.md#char
+[String]:   types.md#string
+[Array]:    types.md#array
+[List]:     types.md#list
+[Struct]:   types.md#struct
+[Map]:      types.md#map
+[Enum]:     types.md#enum
+[Space]:    types.md#space
+[Padding]:  types.md#padding
+[Pointer]:  types.md#pointer
+[Rc]:       types.md#rc
+[Heap]:     types.md#heap
