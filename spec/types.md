@@ -427,14 +427,14 @@ The data of an rc is a little-endian unsigned integer with `len_b(id)` bytes
 that represents the number of references to this item. After which is the data
 for `V`. No mark is required since `V` has already been defined.
 
-Rc's should always be used alongside pointers. They should be treated like an
+Rc's should always be used alongside [Pointer]s. They should be treated like an
 invisible box most of the time; Only when doing pointer operations should rc's
 be considered.
 
-* `2c`: 1-byte (u8 variant)
-* `2d`: 2-byte (u16 variant)
-* `2e`: 4-byte (u32 variant)
-* `2f`: 8-byte (u64 variant)
+* `2c`: 1-byte (u8 reference count)
+* `2d`: 2-byte (u16 reference count)
+* `2e`: 4-byte (u32 reference count)
+* `2f`: 8-byte (u64 reference count)
 
 ```rust
 let id = b_iter(0..4, S | T(3)); // [0x2c, 0x2d, 0x2e, 0x2f]
