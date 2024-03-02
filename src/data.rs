@@ -1,623 +1,413 @@
-//! Internal data structs
-//!
-//! Here, you'll find [Value], [Mark], and [Type].
-
-use std::fmt::Display;
-
-use serde::{Deserialize, Serialize};
-
-use crate::{
-    error::{Error, Result},
-    object::{ObjectDump, ObjectParse},
+use enum_as_inner::EnumAsInner;
+use maybe_async::maybe_async;
+use std::{
+    char::{self},
+    io::{Read, Seek, SeekFrom},
+    mem,
+    ops::Deref,
+    sync::Arc,
 };
 
-use self::{de::ValueDe, ser::ValueSer};
+use byteorder::{LittleEndian, ReadBytesExt};
 
-pub mod de;
-pub mod ser;
+use crate::{
+    engine::MbonParserRead,
+    errors::{MbonError, MbonResult},
+    marks::{Mark, Size},
+};
 
-/// The basic unit for data in binary save data.
-///
-/// This is used as an intermidiate object for dumping/loading binary data. You
-/// will generally not need to use this struct.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Value {
-    Long(i64),
-    Int(i32),
-    Short(i16),
-    Char(i8),
-    Float(f32),
-    Double(f64),
-    Bytes(Vec<u8>),
-    Str(String),
-    Object(Vec<u8>),
-    Enum(u32, Box<Value>),
+macro_rules! number_type {
+    ($name:ident, $type:ty, $file:ident: $read:expr) => {
+        #[derive(Debug, Clone)]
+        pub struct $name($type);
+        impl Deref for $name {
+            type Target = $type;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+        impl $name {
+            pub(crate) fn parse<R: Read>($file: &mut R) -> MbonResult<Self> {
+                let val = $read;
+                Ok(Self(val))
+            }
+
+            pub fn value(&self) -> $type {
+                self.0
+            }
+        }
+    };
+}
+
+macro_rules! char_impl {
+    ($name:ident) => {
+        impl $name {
+            #[inline]
+            pub fn as_char(&self) -> Option<char> {
+                char::from_u32(self.0 as u32)
+            }
+        }
+    };
+}
+
+number_type!(U8,  u8,  f: f.read_u8()?);
+number_type!(U16, u16, f: f.read_u16::<LittleEndian>()?);
+number_type!(U32, u32, f: f.read_u32::<LittleEndian>()?);
+number_type!(U64, u64, f: f.read_u64::<LittleEndian>()?);
+number_type!(I8,  i8,  f: f.read_i8()?);
+number_type!(I16, i16, f: f.read_i16::<LittleEndian>()?);
+number_type!(I32, i32, f: f.read_i32::<LittleEndian>()?);
+number_type!(I64, i64, f: f.read_i64::<LittleEndian>()?);
+number_type!(F32, f32, f: f.read_f32::<LittleEndian>()?);
+number_type!(F64, f64, f: f.read_f64::<LittleEndian>()?);
+number_type!(C8,  u8,  f: f.read_u8()?);
+char_impl!(C8);
+number_type!(C16, u16, f: f.read_u16::<LittleEndian>()?);
+char_impl!(C16);
+number_type!(C32, u32, f: f.read_u32::<LittleEndian>()?);
+char_impl!(C32);
+
+#[derive(Debug, Clone)]
+pub struct Str(String);
+impl Deref for Str {
+    type Target = String;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl From<Str> for String {
+    fn from(value: Str) -> Self {
+        value.0
+    }
+}
+impl Str {
+    pub(crate) fn parse<R: Read>(f: &mut R, l: &Size) -> MbonResult<Self> {
+        let mut buf = vec![0u8; **l as usize];
+        f.read_exact(buf.as_mut_slice())?;
+        let val = String::from_utf8(buf).map_err(|err| MbonError::InvalidData(err.into()))?;
+        Ok(Self(val))
+    }
+
+    pub fn value(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct List {
+    items: Vec<PartialItem>,
+    start: u64,
+    end: u64,
+}
+
+#[maybe_async]
+impl List {
+    pub(crate) fn new(start: u64, l: &Size) -> MbonResult<Self> {
+        let end = start + **l;
+        Ok(List {
+            items: Vec::new(),
+            start,
+            end,
+        })
+    }
+
+    pub async fn fetch<'t, E: MbonParserRead>(
+        &'t mut self,
+        client: &mut E,
+        index: usize,
+    ) -> MbonResult<Option<&'t mut PartialItem>> {
+        if self.items.len() > index {
+            return Ok(Some(&mut self.items[index]));
+        }
+
+        let mut location = match self.items.last() {
+            Some(item) => item.location + item.mark.total_len(),
+            None => self.start,
+        };
+        if location > self.end {
+            return Err(MbonError::InvalidMark);
+        }
+        let mut len = self.items.len();
+
+        loop {
+            let (mark, pos) = client.parse_mark(SeekFrom::Start(location)).await?;
+            let item = PartialItem::new(mark, pos);
+            location = item.location + item.mark.total_len();
+            if location > self.end {
+                return Err(MbonError::InvalidMark);
+            }
+            self.items.push(item);
+            len += 1;
+
+            if len == index + 1 {
+                return Ok(Some(&mut self.items[index]));
+            }
+            if location == self.end {
+                return Ok(None);
+            }
+        }
+    }
+
+    #[inline]
+    pub fn get(&self, index: usize) -> Option<&PartialItem> {
+        self.items.get(index)
+    }
+
+    #[inline]
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut PartialItem> {
+        self.items.get_mut(index)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Array {
+    items: Vec<Option<Data>>,
+    pub mark: Arc<Mark>,
+    start: u64,
+}
+
+#[maybe_async]
+impl Array {
+    pub fn new(start: u64, mark: Arc<Mark>, n: &Size) -> MbonResult<Self> {
+        let items = vec![None; **n as usize];
+        Ok(Array { items, mark, start })
+    }
+
+    pub async fn fetch<'t, E: MbonParserRead>(
+        &'t mut self,
+        client: &mut E,
+        index: usize,
+    ) -> MbonResult<Option<&'t mut Data>> {
+        if self.items.len() <= index {
+            return Ok(None);
+        }
+
+        if self.items[index].is_some() {
+            return Ok(self.items[index].as_mut());
+        }
+
+        let len = self.mark.data_len();
+        let location = self.start + len * (index as u64);
+        let (data, _) = client
+            .parse_data(&self.mark, SeekFrom::Start(location))
+            .await?;
+
+        self.items[index] = Some(data);
+        Ok(self.items[index].as_mut())
+    }
+
+    #[inline]
+    pub fn get(&self, index: usize) -> Option<&Data> {
+        self.items.get(index).map(|v| v.as_ref()).flatten()
+    }
+
+    #[inline]
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut Data> {
+        self.items.get_mut(index).map(|v| v.as_mut()).flatten()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Struct {
+    items: Vec<(Option<Data>, Option<Data>)>,
+    pub key: Arc<Mark>,
+    pub val: Arc<Mark>,
+    start: u64,
+}
+
+#[maybe_async]
+impl Struct {
+    pub fn new(start: u64, key: Arc<Mark>, val: Arc<Mark>, n: &Size) -> MbonResult<Self> {
+        let items = vec![(None, None); **n as usize];
+        Ok(Self {
+            items,
+            key,
+            val,
+            start,
+        })
+    }
+
+    async fn fetch_nth<'t, E: MbonParserRead>(
+        &'t mut self,
+        client: &mut E,
+        index: usize,
+    ) -> MbonResult<Option<&'t mut Data>> {
+        let item_i = index / 2;
+        let korv = index & 0b1 != 0;
+
+        let (k, v) = match self.items.get_mut(item_i) {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+        let (val, mark) = match korv {
+            true => (k, &self.key),
+            false => (v, &self.val),
+        };
+        if let Some(val) = val {
+            return Ok(Some(val));
+        }
+        let key_len = self.key.data_len();
+        let val_len = self.val.data_len();
+        let mut offset = (key_len + val_len) * item_i as u64;
+        if !korv {
+            offset += key_len;
+        }
+
+        let (data, _) = client
+            .parse_data(mark, SeekFrom::Start(self.start + offset))
+            .await?;
+
+        let _ = mem::replace(val, Some(data));
+
+        Ok(val.as_mut())
+    }
+
+    #[inline]
+    pub async fn fetch_key<'t, E: MbonParserRead>(
+        &'t mut self,
+        client: &mut E,
+        index: usize,
+    ) -> MbonResult<Option<&'t mut Data>> {
+        self.fetch_nth(client, index * 2).await
+    }
+
+    #[inline]
+    pub async fn fetch_val<'t, E: MbonParserRead>(
+        &'t mut self,
+        client: &mut E,
+        index: usize,
+    ) -> MbonResult<Option<&'t mut Data>> {
+        self.fetch_nth(client, index * 2 + 1).await
+    }
+
+    pub async fn fetch_by_key<'t, E: MbonParserRead>(
+        &'t mut self,
+        client: &mut E,
+        key: &Data,
+    ) -> MbonResult<Option<&'t mut Data>> {
+        for i in 0..self.items.len() {
+            if let Some(k) = self.fetch_key(client, i).await? {
+                todo!()
+            }
+        }
+
+        todo!()
+    }
+}
+
+#[derive(Debug, Clone, EnumAsInner)]
+pub enum Data {
     Null,
-    List(Vec<Value>),
-    Map(Vec<(Value, Value)>),
+    U8(U8),
+    U16(U16),
+    U32(U32),
+    U64(U64),
+    I8(I8),
+    I16(I16),
+    I32(I32),
+    I64(I64),
+    F32(F32),
+    F64(F64),
+    C8(C8),
+    C16(C16),
+    C32(C32),
+    String(Str),
+    List(List),
+    Array(Array),
+    Struct(Struct),
 }
 
-impl Value {
-    /// Get the type of this value.
-    ///
-    /// This will return the actual type that would be stored when the value is
-    /// converted into binary.
-    ///
-    /// ```
-    /// use mbon::data::{Value, Type};
-    ///
-    /// assert_eq!(Value::Long(32).get_type(), Type::Long);
-    ///
-    /// assert_eq!(
-    ///     Value::List(vec![Value::Int(64), Value::Int(12)]).get_type(),
-    ///     Type::Array
-    /// );
-    ///
-    /// assert_eq!(
-    ///     Value::List(vec![Value::Int(64), Value::Short(12)]).get_type(),
-    ///     Type::List
-    /// );
-    /// ```
-    pub fn get_type(&self) -> Type {
-        match self {
-            Value::Long(_) => Type::Long,
-            Value::Int(_) => Type::Int,
-            Value::Short(_) => Type::Short,
-            Value::Char(_) => Type::Char,
-            Value::Float(_) => Type::Float,
-            Value::Double(_) => Type::Double,
-            Value::Bytes(_) => Type::Bytes,
-            Value::Str(_) => Type::Str,
-            Value::Object(_) => Type::Object,
-            Value::Enum(_, _) => Type::Enum,
-            Value::Null => Type::Null,
-            Value::List(v) => {
-                if Self::can_be_array(v) {
-                    Type::Array
-                } else {
-                    Type::List
-                }
+impl Data {
+    pub(crate) fn parse<R: Read + Seek>(f: &mut R, mark: &Mark) -> MbonResult<Self> {
+        Ok(match mark {
+            Mark::Null => Self::Null,
+            Mark::Unsigned(b) => match b {
+                1 => Self::U8(U8::parse(f)?),
+                2 => Self::U16(U16::parse(f)?),
+                4 => Self::U32(U32::parse(f)?),
+                8 => Self::U64(U64::parse(f)?),
+                _ => return Err(MbonError::InvalidMark),
+            },
+            Mark::Signed(b) => match b {
+                1 => Self::I8(I8::parse(f)?),
+                2 => Self::I16(I16::parse(f)?),
+                4 => Self::I32(I32::parse(f)?),
+                8 => Self::I64(I64::parse(f)?),
+                _ => return Err(MbonError::InvalidMark),
+            },
+            Mark::Float(b) => match b {
+                4 => Self::F32(F32::parse(f)?),
+                8 => Self::F64(F64::parse(f)?),
+                _ => return Err(MbonError::InvalidMark),
+            },
+            Mark::Char(b) => match b {
+                1 => Self::C8(C8::parse(f)?),
+                2 => Self::C16(C16::parse(f)?),
+                4 => Self::C32(C32::parse(f)?),
+                _ => return Err(MbonError::InvalidMark),
+            },
+            Mark::String(l) => Self::String(Str::parse(f, l)?),
+            Mark::Array(v, n) => Self::Array(Array::new(f.stream_position()?, v.clone(), &n)?),
+            Mark::List(l) => Self::List(List::new(f.stream_position()?, l)?),
+            Mark::Struct(k, v, n) => {
+                Self::Struct(Struct::new(f.stream_position()?, k.clone(), v.clone(), &n)?)
             }
-            Value::Map(v) => {
-                if Self::can_be_dict(v) {
-                    Type::Dict
-                } else {
-                    Type::Map
-                }
-            }
-        }
+            Mark::Map(_) => todo!(),
+            Mark::Enum(_, _) => todo!(),
+            Mark::Space => todo!(),
+            Mark::Padding(_) => todo!(),
+            Mark::Pointer(_) => todo!(),
+            Mark::Rc(_, _) => todo!(),
+            Mark::Heap(_) => todo!(),
+        })
     }
 
-    /// Parse a struct from this value
-    ///
-    /// ```
-    /// use mbon::data::Value;
-    ///
-    /// let foo: u32 = Value::Int(345).parse().unwrap();
-    /// assert_eq!(foo, 345);
-    /// ```
-    #[inline]
-    pub fn parse<'t, T>(&'t self) -> Result<T>
-    where
-        T: Deserialize<'t>,
-    {
-        T::deserialize(ValueDe::new(&self))
-    }
-
-    /// Dump a struct into a value
-    ///
-    /// ```
-    /// use mbon::data::Value;
-    ///
-    /// let obj: u32 = 345;
-    /// let val = Value::dump(obj).unwrap();
-    ///
-    /// if let Value::Int(v) = val {
-    ///     assert_eq!(v, 345);
-    /// } else {
-    ///     panic!("val is not an Int");
-    /// }
-    /// ```
-    #[inline]
-    pub fn dump<T>(value: T) -> Result<Self>
-    where
-        T: Serialize,
-    {
-        value.serialize(&mut ValueSer)
-    }
-
-    /// Parse an object from this value
-    ///
-    /// This will attempt to parse an Object only if the Value is an Object
-    /// type.
-    ///
-    /// ```
-    /// use mbon::object::ObjectParse;
-    /// use mbon::parser::Parser;
-    /// use mbon::error::Error;
-    /// use mbon::data::Value;
-    ///
-    /// struct Foo {
-    ///     a: i32,
-    ///     b: String,
-    /// }
-    ///
-    /// impl ObjectParse for Foo {
-    ///     type Error = Error;
-    ///
-    ///     fn parse_object(object: &[u8]) -> Result<Self, Self::Error> {
-    ///         let mut parser = Parser::from(object);
-    ///         let a = parser.next()?;
-    ///         let b = parser.next()?;
-    ///         Ok(Self { a, b })
-    ///     }
-    /// }
-    ///
-    /// let val = Value::Object(b"i\x00\x00\x32\x40s\x00\x00\x00\x05Hello".to_vec());
-    /// let foo: Foo = val.parse_obj().unwrap();
-    ///
-    /// assert_eq!(foo.a, 0x3240);
-    /// assert_eq!(foo.b, "Hello");
-    /// ```
-    pub fn parse_obj<T>(&self) -> Result<T>
-    where
-        T: ObjectParse,
-        <T as ObjectParse>::Error: std::error::Error + 'static,
-    {
-        if let Value::Object(data) = self {
-            Error::from_res(T::parse_object(data))
-        } else {
-            Err(Error::Expected(Type::Object))
-        }
-    }
-
-    /// Dump an object into this value
-    ///
-    /// ```
-    /// use mbon::object::ObjectDump;
-    /// use mbon::dumper::Dumper;
-    /// use mbon::error::Error;
-    /// use mbon::data::Value;
-    ///
-    /// struct Foo {
-    ///     a: i32,
-    ///     b: String,
-    /// }
-    ///
-    /// impl ObjectDump for Foo {
-    ///     type Error = Error;
-    ///
-    ///     fn dump_object(&self) -> Result<Vec<u8>, Self::Error> {
-    ///         let mut dumper = Dumper::new();
-    ///         dumper.write(&self.a);
-    ///         dumper.write(&self.b);
-    ///         Ok(dumper.writer())
-    ///     }
-    /// }
-    ///
-    /// let foo = Foo { a: 0x3240, b: "Hello".to_owned() };
-    /// let val = Value::dump_obj(foo).unwrap();
-    ///
-    /// if let Value::Object(v) = val {
-    ///     assert_eq!(v, b"i\x00\x00\x32\x40s\x00\x00\x00\x05Hello");
-    /// } else {
-    ///     panic!("val is not an Object");
-    /// }
-    /// ```
-    #[inline]
-    pub fn dump_obj<T>(value: T) -> Result<Self>
-    where
-        T: ObjectDump,
-        <T as ObjectDump>::Error: std::error::Error + 'static,
-    {
-        let data = Error::from_res(value.dump_object())?;
-        Ok(Value::Object(data))
-    }
-
-    /// Get the total size in bytes that this value uses in binary form
-    ///
-    /// ```
-    /// use mbon::data::Value;
-    ///
-    /// let value = Value::Int(42);
-    ///
-    /// assert_eq!(value.size(), 5);
-    /// ```
-    #[inline]
-    pub fn size(&self) -> usize {
-        Mark::from(self).size()
-    }
-
-    /// Get the size in bytes that the data will use in binary form
-    ///
-    /// ```
-    /// use mbon::data::Value;
-    ///
-    /// let value = Value::Int(42);
-    ///
-    /// assert_eq!(value.data_size(), 4);
-    /// ```
-    #[inline]
-    pub fn data_size(&self) -> usize {
-        Mark::from(self).data_size()
-    }
-
-    /// Get the size in bytes that the mark will use in binary form
-    ///
-    /// ```
-    /// use mbon::data::Value;
-    ///
-    /// let value = Value::Int(42);
-    ///
-    /// assert_eq!(value.mark_size(), 1);
-    /// ```
-    #[inline]
-    pub fn mark_size(&self) -> usize {
-        Mark::from(self).mark_size()
-    }
-
-    /// Check if a list can be stored as an array
-    ///
-    /// If all elements in the list have the same mark, then the list can be an
-    /// array.
-    ///
-    /// ```
-    /// use mbon::data::Value;
-    ///
-    /// let array = vec![Value::Int(32), Value::Int(42)];
-    /// assert_eq!(Value::can_be_array(&array), true);
-    ///
-    /// let list = vec![Value::Int(32), Value::Char(42)];
-    /// assert_eq!(Value::can_be_array(&list), false);
-    /// ```
-    pub fn can_be_array<'t, I>(list: I) -> bool
-    where
-        I: IntoIterator<Item = &'t Value>,
-    {
-        let mut iter = list.into_iter();
-        if let Some(first) = iter.next() {
-            let first_mark = Mark::from_value(first);
-
-            for val in iter {
-                let mark = Mark::from_value(val);
-                if mark != first_mark {
-                    return false;
-                }
-            }
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Check if a map can be stored as a dict
-    ///
-    /// If each key-value pair uses the same marks then the map can be a dict.
-    ///
-    /// ```
-    /// use mbon::data::Value;
-    ///
-    /// let dict = vec![
-    ///     (Value::Str("a".to_owned()), Value::Int(32)),
-    ///     (Value::Str("b".to_owned()), Value::Int(42)),
-    /// ];
-    /// assert_eq!(Value::can_be_dict(&dict), true);
-    ///
-    /// let map = vec![
-    ///     (Value::Str("a".to_owned()), Value::Int(32)),
-    ///     (Value::Str("hello".to_owned()), Value::Int(42)),
-    /// ];
-    /// assert_eq!(Value::can_be_dict(&map), false);
-    /// ```
-    pub fn can_be_dict<'t, I>(map: I) -> bool
-    where
-        I: IntoIterator<Item = &'t (Value, Value)>,
-    {
-        let mut iter = map.into_iter();
-        if let Some((first_k, first_v)) = iter.next() {
-            let key_mark: Mark = first_k.into();
-            let val_mark: Mark = first_v.into();
-
-            for (k, v) in iter {
-                let km: Mark = k.into();
-                let vm: Mark = v.into();
-                if km != key_mark || vm != val_mark {
-                    return false;
-                }
-            }
-            true
-        } else {
-            false
-        }
-    }
-}
-
-impl AsRef<Value> for Value {
-    fn as_ref(&self) -> &Value {
-        &self
-    }
-}
-
-/// An indicator of what's contained in the value.
-///
-/// This is the first thing that is read/written in mbon, and it will tell the
-/// reader how to read the value that the mark represents.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Mark {
-    Long,
-    Int,
-    Short,
-    Char,
-    Float,
-    Double,
-    Bytes(usize),
-    Str(usize),
-    Object(usize),
-    Enum(Box<Mark>),
-    Null,
-    Array(usize, Box<Mark>),
-    List(usize),
-    Dict(usize, Box<Mark>, Box<Mark>),
-    Map(usize),
-}
-
-impl Mark {
-    /// Get the size in bytes that the mark will use in binary form
-    ///
-    /// ```
-    /// use mbon::data::Mark;
-    ///
-    /// assert_eq!(Mark::Int.mark_size(), 1);
-    /// ```
-    pub fn mark_size(&self) -> usize {
+    pub fn maybe_eq(&self, other: &Self) -> Option<bool> {
         match self {
-            Mark::Long => 1,
-            Mark::Int => 1,
-            Mark::Short => 1,
-            Mark::Char => 1,
-            Mark::Float => 1,
-            Mark::Double => 1,
-            Mark::Bytes(_) => 5,
-            Mark::Str(_) => 5,
-            Mark::Object(_) => 5,
-            Mark::Enum(m) => 1 + m.mark_size(),
-            Mark::Null => 1,
-            Mark::Array(_, m) => 5 + m.mark_size(),
-            Mark::List(_) => 5,
-            Mark::Dict(_, k, v) => 5 + k.mark_size() + v.mark_size(),
-            Mark::Map(_) => 5,
-        }
-    }
-
-    /// Get the size in bytes that the data will use in binary form
-    ///
-    /// ```
-    /// use mbon::data::Mark;
-    ///
-    /// assert_eq!(Mark::Int.data_size(), 4);
-    /// ```
-    pub fn data_size(&self) -> usize {
-        match self {
-            Mark::Long => 8,
-            Mark::Int => 4,
-            Mark::Short => 2,
-            Mark::Char => 1,
-            Mark::Float => 4,
-            Mark::Double => 8,
-            Mark::Bytes(n) => *n,
-            Mark::Str(n) => *n,
-            Mark::Object(n) => *n,
-            Mark::Enum(m) => m.data_size() + 4,
-            Mark::Null => 0,
-            Mark::Array(len, m) => len * m.data_size(),
-            Mark::List(n) => *n,
-            Mark::Dict(len, k, v) => len * (k.data_size() + v.data_size()),
-            Mark::Map(n) => *n,
-        }
-    }
-
-    /// Get the total size in bytes that this value uses in binary form
-    ///
-    /// ```
-    /// use mbon::data::Mark;
-    ///
-    /// assert_eq!(Mark::Int.size(), 5);
-    /// ```
-    #[inline]
-    pub fn size(&self) -> usize {
-        self.mark_size() + self.data_size()
-    }
-
-    /// Get the type of this mark
-    pub fn get_type(&self) -> Type {
-        match self {
-            Mark::Long => Type::Long,
-            Mark::Int => Type::Int,
-            Mark::Short => Type::Short,
-            Mark::Char => Type::Char,
-            Mark::Float => Type::Float,
-            Mark::Double => Type::Double,
-            Mark::Bytes(_) => Type::Bytes,
-            Mark::Str(_) => Type::Str,
-            Mark::Object(_) => Type::Object,
-            Mark::Enum(_) => Type::Enum,
-            Mark::Null => Type::Null,
-            Mark::Array(_, _) => Type::Array,
-            Mark::List(_) => Type::List,
-            Mark::Dict(_, _, _) => Type::Dict,
-            Mark::Map(_) => Type::Map,
-        }
-    }
-
-    /// Get the mark from a value
-    ///
-    /// ```
-    /// use mbon::data::{Mark, Value};
-    ///
-    /// assert_eq!(Mark::from_value(Value::Int(32)), Mark::Int);
-    /// assert_eq!(
-    ///     Mark::from_value(Value::Str("Hello".to_owned())),
-    ///     Mark::Str(5)
-    /// );
-    /// ```
-    pub fn from_value(val: impl AsRef<Value>) -> Self {
-        match val.as_ref() {
-            Value::Long(_) => Self::Long,
-            Value::Int(_) => Self::Int,
-            Value::Short(_) => Self::Short,
-            Value::Char(_) => Self::Char,
-            Value::Float(_) => Self::Float,
-            Value::Double(_) => Self::Double,
-            Value::Bytes(v) => Self::Bytes(v.len()),
-            Value::Str(v) => Self::Str(v.len()),
-            Value::Object(v) => Self::Object(v.len()),
-            Value::Enum(_, v) => Self::Enum(Box::new(Self::from_value(v))),
-            Value::Null => Self::Null,
-            Value::List(v) => {
-                if Value::can_be_array(v) {
-                    let first = v.first().unwrap();
-                    Self::Array(v.len(), Box::new(Self::from_value(first)))
-                } else {
-                    Self::List(v.iter().map(|v| Self::from_value(v).size()).sum())
-                }
-            }
-            Value::Map(v) => {
-                if Value::can_be_dict(v) {
-                    let (first_k, first_v) = v.first().unwrap();
-                    Self::Dict(
-                        v.len(),
-                        Box::new(Self::from_value(first_k)),
-                        Box::new(Self::from_value(first_v)),
-                    )
-                } else {
-                    Self::Map(
-                        v.iter()
-                            .map(|(k, v)| Self::from_value(k).size() + Self::from_value(v).size())
-                            .sum(),
-                    )
-                }
-            }
+            Data::Null => Some(other.is_null()),
+            Data::U8(l) => Some(other.as_u8().map(|r| **l == **r).unwrap_or(false)),
+            Data::U16(l) => Some(other.as_u16().map(|r| **l == **r).unwrap_or(false)),
+            Data::U32(l) => Some(other.as_u32().map(|r| **l == **r).unwrap_or(false)),
+            Data::U64(l) => Some(other.as_u64().map(|r| **l == **r).unwrap_or(false)),
+            Data::I8(l) => Some(other.as_i8().map(|r| **l == **r).unwrap_or(false)),
+            Data::I16(l) => Some(other.as_i16().map(|r| **l == **r).unwrap_or(false)),
+            Data::I32(l) => Some(other.as_i32().map(|r| **l == **r).unwrap_or(false)),
+            Data::I64(l) => Some(other.as_i64().map(|r| **l == **r).unwrap_or(false)),
+            Data::F32(l) => Some(other.as_f32().map(|r| **l == **r).unwrap_or(false)),
+            Data::F64(l) => Some(other.as_f64().map(|r| **l == **r).unwrap_or(false)),
+            Data::C8(l) => Some(other.as_c8().map(|r| **l == **r).unwrap_or(false)),
+            Data::C16(l) => Some(other.as_c16().map(|r| **l == **r).unwrap_or(false)),
+            Data::C32(l) => Some(other.as_c32().map(|r| **l == **r).unwrap_or(false)),
+            Data::String(l) => Some(other.as_string().map(|r| **l == **r).unwrap_or(false)),
+            Data::List(_) => todo!(),
+            Data::Array(_) => todo!(),
+            Data::Struct(_) => todo!(),
         }
     }
 }
 
-impl AsRef<Mark> for Mark {
-    fn as_ref(&self) -> &Mark {
-        self
-    }
+#[derive(Debug, Clone)]
+pub struct PartialItem {
+    pub mark: Mark,
+    pub data: Option<Data>,
+    location: u64,
 }
 
-impl From<Mark> for Type {
-    fn from(m: Mark) -> Self {
-        m.get_type()
-    }
-}
-
-impl<'t> From<&'t Mark> for Type {
-    fn from(m: &'t Mark) -> Self {
-        m.get_type()
-    }
-}
-
-impl From<Value> for Mark {
-    fn from(v: Value) -> Self {
-        Self::from_value(v)
-    }
-}
-
-impl<'t> From<&'t Value> for Mark {
-    fn from(v: &'t Value) -> Self {
-        Self::from_value(v)
-    }
-}
-
-/// An indicator for what type of value is stored
-///
-/// This is the first byte that is read/written and indicates how to read the
-/// mark that is contained.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Type {
-    Long,
-    Int,
-    Short,
-    Char,
-    Float,
-    Double,
-    Bytes,
-    Str,
-    Object,
-    Enum,
-    Null,
-    Array,
-    List,
-    Dict,
-    Map,
-}
-
-impl Display for Type {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Type::Long => f.write_str("Long"),
-            Type::Int => f.write_str("Int"),
-            Type::Short => f.write_str("Short"),
-            Type::Char => f.write_str("Char"),
-            Type::Float => f.write_str("Float"),
-            Type::Double => f.write_str("Double"),
-            Type::Bytes => f.write_str("Bytes"),
-            Type::Str => f.write_str("Str"),
-            Type::Object => f.write_str("Object"),
-            Type::Enum => f.write_str("Enum"),
-            Type::Null => f.write_str("Null"),
-            Type::Array => f.write_str("Array"),
-            Type::List => f.write_str("List"),
-            Type::Dict => f.write_str("Dict"),
-            Type::Map => f.write_str("Map"),
-        }
-    }
-}
-
-impl Type {
-    /// Get the prefix that will indicate the value type
-    #[inline]
-    pub fn prefix(&self) -> u8 {
-        match self {
-            Type::Long => b'l',
-            Type::Int => b'i',
-            Type::Short => b'h',
-            Type::Char => b'c',
-            Type::Float => b'f',
-            Type::Double => b'd',
-            Type::Bytes => b'b',
-            Type::Str => b's',
-            Type::Object => b'o',
-            Type::Enum => b'e',
-            Type::Null => b'n',
-            Type::Array => b'a',
-            Type::List => b'A',
-            Type::Dict => b'm',
-            Type::Map => b'M',
+impl PartialItem {
+    pub fn new(mark: Mark, location: u64) -> Self {
+        Self {
+            mark,
+            location,
+            data: None,
         }
     }
 
-    /// Get the type from the given prefix
-    pub fn from_prefix(prefix: u8) -> Result<Self> {
-        match prefix {
-            b'l' => Ok(Type::Long),
-            b'i' => Ok(Type::Int),
-            b'h' => Ok(Type::Short),
-            b'c' => Ok(Type::Char),
-            b'f' => Ok(Type::Float),
-            b'd' => Ok(Type::Double),
-            b'b' => Ok(Type::Bytes),
-            b's' => Ok(Type::Str),
-            b'o' => Ok(Type::Object),
-            b'e' => Ok(Type::Enum),
-            b'n' => Ok(Type::Null),
-            b'a' => Ok(Type::Array),
-            b'A' => Ok(Type::List),
-            b'm' => Ok(Type::Dict),
-            b'M' => Ok(Type::Map),
-            _ => Err(Error::DataError(format!("Unknown prefix `{}`", prefix))),
-        }
+    pub(crate) fn parse_data<R: Read + Seek>(&mut self, f: &mut R) -> MbonResult<()> {
+        f.seek(SeekFrom::Start(self.location))?;
+        let data = Data::parse(f, &self.mark)?;
+        self.data = Some(data);
+        Ok(())
     }
 }
