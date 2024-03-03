@@ -4,16 +4,18 @@ use std::{
     fs::File,
     io::{self, Read, Seek, SeekFrom},
     path::Path,
-    thread::JoinHandle,
 };
 
 #[cfg(feature = "async")]
 use std::sync::{Arc, Mutex, MutexGuard};
 #[cfg(feature = "async-tokio")]
-use tokio::task::spawn_blocking;
+use tokio::task::{spawn_blocking, JoinHandle};
+
+#[cfg(feature = "sync")]
+use std::thread::JoinHandle;
 
 use crate::{
-    buffer::BufferedReadWrite,
+    buffer::{FileBuffer, FileBufferBuilder},
     concurrent::{ConcurrentEngineClient, ConcurrentEngineWrapper},
     data::{Data, PartialItem},
     errors::{MbonError, MbonResult},
@@ -54,9 +56,9 @@ pub trait MbonParserRead {
 }
 
 #[cfg(feature = "sync")]
-type Reader<F> = BufferedReadWrite<F>;
+type Reader<F> = FileBuffer<F>;
 #[cfg(feature = "async")]
-type Reader<F> = Arc<Mutex<BufferedReadWrite<F>>>;
+type Reader<F> = Arc<Mutex<FileBuffer<F>>>;
 
 /// Mbon Engine
 ///
@@ -95,12 +97,12 @@ impl Engine<File> {
 #[cfg(feature = "async")]
 impl<F> Engine<F> {
     #[inline]
-    fn get_file(&mut self) -> MutexGuard<BufferedReadWrite<F>> {
+    fn get_file(&mut self) -> MutexGuard<FileBuffer<F>> {
         self.file.lock().unwrap()
     }
 
     #[inline]
-    fn new_file(f: BufferedReadWrite<F>) -> Arc<Mutex<BufferedReadWrite<F>>> {
+    fn new_file(f: FileBuffer<F>) -> Arc<Mutex<FileBuffer<F>>> {
         Arc::new(Mutex::new(f))
     }
 }
@@ -108,11 +110,11 @@ impl<F> Engine<F> {
 #[cfg(feature = "sync")]
 impl<F> Engine<F> {
     #[inline]
-    fn get_file(&mut self) -> &mut BufferedReadWrite<F> {
+    fn get_file(&mut self) -> &mut FileBuffer<F> {
         &mut self.file
     }
     #[inline]
-    fn new_file(f: BufferedReadWrite<F>) -> BufferedReadWrite<F> {
+    fn new_file(f: FileBuffer<F>) -> FileBuffer<F> {
         f
     }
 }
@@ -140,7 +142,7 @@ where
     /// Create a new engine from a file
     pub fn new(file: F) -> Self {
         Self {
-            file: Self::new_file(BufferedReadWrite::new(file).build()),
+            file: Self::new_file(FileBufferBuilder::new().build_sync(file)),
         }
     }
 
