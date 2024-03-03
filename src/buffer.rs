@@ -1,53 +1,36 @@
-//! Contains [BufferedReadWrite], which is a wrapper for files.
+//! Contains [FileBuffer], which is a wrapper for files.
 //!
-//! It currently can only be implemented synchronously which requires that
-//! operations are executed in a spawn_blocking context. This isn't the worst,
-//! but it would be nice to be able to utilize async io as it is natively
-//! supported by tokio.
+//! There is now an asynchronous implementation of [FileBuffer]:
+//! [FileBufferAsync]. It has not been tested yet, but I like they way it is
+//! implemented and should be implemented in a similar way for [FileBuffer]
+//! (Rather than doing work upfront, FileBuffer should instead perform actions
+//! as it goes).
 //!
-//! I can't just write an AsyncRead/AsyncWrite wrapper since it requires a state
-//! that would make the current implementation way too complex. If I were to
-//! implement AsyncReadExt/AsyncWriteExt which have a nicer, I would also need
-//! to implement the base traits. It's possible that I could just implement the
-//! base trait and panic if the base trait is called, but I don't know how I
-//! feel about that.
-//!
-//! I could make a custom trait that all asyncReadExt objects would implement,
-//! but then users would need to import that custom trait whenever they are
-//! using the engine which doesn't sound great either.
-//!
-//! Also, how would I deal with files that are provided that are sync only, such
-//! as with a `vec<u8>`? When in async mode, I would have to have two
-//! implementations available for whether F is async or not.
+//! The Buffer helper struct also needs to be majorly cleaned up. I'm tired,
+//! good night. 😴
 
 use std::{
-    collections::{BinaryHeap, HashMap, HashSet},
+    collections::{BTreeSet, BinaryHeap, HashMap},
     mem,
+    ops::Range,
+    pin::Pin,
+    task::{Context, Poll},
 };
 
 use std::io::{self, Read, Seek, SeekFrom, Write};
+
+use enum_as_inner::EnumAsInner;
+use pin_project::pin_project;
+use tokio::io::{AsyncRead, AsyncSeek, AsyncWrite, ReadBuf};
 
 struct Block {
     data: Vec<u8>,
     access: u64,
 }
 
-/// A wrapper for files which holds a buffer for the file.
-///
-/// This buffer can hold the entire file in memory and has an option to limit
-/// how much data is stored in memory (the default limit is 1GiB).
-///
-/// Reads and writes are performed in blocks (the default block size is 512
-/// bytes).
-///
-/// This struct is designed to work with simultaneous read/write operations.
-///
-/// No writes occur to the underlying file until either flush is called, or the
-/// cache limit has been met.
-pub struct BufferedReadWrite<F> {
+struct Buffer {
     blocks: HashMap<u64, Block>,
-    modified: HashSet<u64>,
-    file: F,
+    modified: BTreeSet<u64>,
     block_size: u64,
     max_blocks: usize,
     ideal_blocks: usize,
@@ -78,160 +61,9 @@ macro_rules! get_block {
     }};
 }
 
-/// Builder for [BufferedReadWrite].
-pub struct BufferedReadWriteBuilder<F> {
-    file: F,
-    block_size: Option<u64>,
-    max_blocks: Option<usize>,
-    ideal_blocks: Option<usize>,
-    max_cache: Option<u64>,
-    ideal_cache: Option<u64>,
-}
-
-impl<F> BufferedReadWriteBuilder<F> {
-    /// Set the number of bytes in a block.
-    ///
-    /// The default is 512 bytes.
-    pub fn with_block_size(mut self, block_size: u64) -> Self {
-        self.block_size = Some(block_size);
-        self
-    }
-
-    /// The maximum number of blocks to have in the cache.
-    ///
-    /// This sets the same value as [Self::with_max_cache], but in a different
-    /// unit
-    ///
-    /// The default value is 1GiB.
-    ///
-    /// Note that during a single read, the cache may become larger than the
-    /// maximum cache for the duration of the read.
-    pub fn with_max_blocks(mut self, max_blocks: usize) -> Self {
-        self.max_blocks = Some(max_blocks);
-        self.max_cache = None;
-        self
-    }
-
-    /// The maximum number of bytes to have in the cache.
-    ///
-    /// This sets the same value as [Self::with_max_blocks], but in a different unit
-    ///
-    /// The default value is 1GiB.
-    ///
-    /// Note that during a single read, the cache may become larger than the
-    /// maximum cache for the duration of the read.
-    pub fn with_max_cache(mut self, max_cache: u64) -> Self {
-        self.max_cache = Some(max_cache);
-        self.max_blocks = None;
-        self
-    }
-
-    /// The number of blocks to reduce the cache to when the cache has filled up.
-    ///
-    /// This sets the same value as [Self::with_ideal_cache], but in a different
-    /// unit
-    ///
-    /// The default value is `max_cache - (1MiB, 1KiB, or max_cache / 5
-    /// /* Which ever is the largest value smaller than max_cache*/)`.
-    pub fn with_ideal_blocks(mut self, max_blocks: usize) -> Self {
-        self.ideal_blocks = Some(max_blocks);
-        self.ideal_cache = None;
-        self
-    }
-
-    /// The number of bytes to reduce the cache to when the cache has filled up.
-    ///
-    /// This sets the same value as [Self::with_ideal_blocks], but in a
-    /// different unit
-    ///
-    /// The default value is `max_cache - (1MiB, 1KiB, or max_cache / 5
-    /// /* Which ever is the largest value smaller than max_cache*/)`.
-    pub fn with_ideal_cache(mut self, max_cache: u64) -> Self {
-        self.ideal_cache = Some(max_cache);
-        self.ideal_blocks = None;
-        self
-    }
-
-    /// Create the BufferedReadWrite object
-    pub fn build(self) -> BufferedReadWrite<F> {
-        let block_size = self.block_size.unwrap_or(512);
-        let max_blocks = self
-            .max_blocks
-            .unwrap_or_else(|| (self.max_cache.unwrap_or(1_073_741_824) / block_size) as usize);
-        let ideal_blocks = self
-            .ideal_blocks
-            .or_else(|| self.ideal_cache.map(|cache| (cache / block_size) as usize))
-            .unwrap_or_else(|| {
-                let mut blocks = (1_048_576 / block_size) as usize;
-                if blocks > max_blocks {
-                    blocks = (1024 / block_size) as usize;
-                }
-                if blocks > max_blocks {
-                    blocks = max_blocks / 5;
-                }
-
-                max_blocks - blocks
-            });
-        // .unwrap_or_else(|| (self.rec_cache.unwrap_or(1_000_000_000) / block_size) as usize);
-        BufferedReadWrite {
-            blocks: HashMap::new(),
-            modified: HashSet::new(),
-            file: self.file,
-            cursor: 0,
-            block_size,
-            max_blocks,
-            ideal_blocks,
-            access_count: 0,
-        }
-    }
-}
-
-impl<F> From<F> for BufferedReadWrite<F>
-where
-    F: Seek,
-{
-    fn from(value: F) -> Self {
-        Self::new(value).build()
-    }
-}
-
-impl<F> BufferedReadWrite<F>
-where
-    F: Seek,
-{
-    /// Create a new BufferedReadWriteBuilder.
-    ///
-    /// ```no_run
-    /// use mbon::buffer::BufferedReadWrite;
-    /// use std::fs::File;
-    ///
-    /// let file = File::options()
-    ///     .read(true)
-    ///     .write(true)
-    ///     .create(true)
-    ///     .open("my_file.mbon").unwrap();
-    /// let f = BufferedReadWrite::new(file).build();
-    /// ```
-    #[inline]
-    pub fn new(file: F) -> BufferedReadWriteBuilder<F> {
-        BufferedReadWriteBuilder {
-            file,
-            block_size: None,
-            max_blocks: None,
-            max_cache: None,
-            ideal_cache: None,
-            ideal_blocks: None,
-        }
-    }
-
-    /// Purge the n_blocks least recently used blocks from the cache.
-    ///
-    /// This will ignore any blocks that have been modified.
-    fn purge_least_recently_used(&mut self, n_blocks: usize) {
-        println!(
-            "Clearing {n_blocks} blocks to {}",
-            self.blocks.len() - n_blocks
-        );
+impl Buffer {
+    fn purge_least_recently_used(&mut self) {
+        let n_blocks = self.blocks.len() - self.ideal_blocks;
         let mut to_delete = BinaryHeap::new();
 
         for (k, v) in &self.blocks {
@@ -256,141 +88,10 @@ where
         }
     }
 
-    /// Clear the cache without flushing the file.
+    /// Read from the buffer.
     ///
-    /// This will preserve any cached blocks that have been modified.
-    pub fn clear_cache_no_flush(&mut self) {
-        let blocks = mem::take(&mut self.blocks);
-        self.blocks = blocks
-            .into_iter()
-            .filter(|(k, _)| self.modified.contains(k))
-            .collect();
-    }
-}
-
-impl<F> BufferedReadWrite<F>
-where
-    F: Write + Seek,
-{
-    fn flush_blocks(&mut self) -> io::Result<()> {
-        // I'm sorting here because I would assume that it is quicker for the file system to write
-        // in order than it would be to write in a random order.
-        let mut modified: Vec<_> = mem::take(&mut self.modified).into_iter().collect();
-        modified.sort_unstable();
-
-        let mut position = match modified.first() {
-            Some(sect) => self.file.seek(SeekFrom::Start(sect * self.block_size))?,
-            None => self.file.seek(SeekFrom::Current(0))?,
-        };
-
-        for sect in modified {
-            let buf = match get_block!(mut self, sect) {
-                Some(b) => b,
-                None => continue,
-            };
-            let pos = sect * self.block_size;
-            if position != pos {
-                self.file.seek(SeekFrom::Start(pos))?;
-                position = pos;
-            }
-
-            self.file.write_all(buf.as_slice())?;
-            position += buf.len() as u64;
-        }
-        self.file.flush()?;
-
-        if self.blocks.len() > self.max_blocks {
-            self.purge_least_recently_used(self.blocks.len() - self.ideal_blocks);
-        }
-
-        Ok(())
-    }
-
-    /// Clear the cache
-    ///
-    /// If there are any modified changes, they will be written to disk before
-    /// clearing the cache.
-    pub fn clear_cache(&mut self) -> io::Result<()> {
-        self.flush_blocks()?;
-        self.blocks.clear();
-        Ok(())
-    }
-}
-
-impl<F> BufferedReadWrite<F>
-where
-    F: Read + Seek,
-{
-    fn load_blocks(&mut self, position: u64, len: u64) -> io::Result<()> {
-        let end = position + len;
-        let block = position / self.block_size;
-        let end_block = (end + self.block_size - 1) / self.block_size;
-        let num_blocks = end_block - block;
-
-        let mut to_load = Vec::new();
-
-        for sect in block..block + num_blocks {
-            if !self.blocks.contains_key(&sect) {
-                to_load.push(sect);
-            }
-        }
-
-        let mut position = self.file.seek(SeekFrom::Current(0))?;
-
-        for sect in to_load {
-            let pos = sect * self.block_size;
-            if position != pos {
-                self.file.seek(SeekFrom::Start(pos))?;
-                position = pos;
-            }
-            let mut buf = vec![0u8; self.block_size as usize];
-            let mut offset = 0;
-            let mut eof = false;
-
-            while offset < buf.len() {
-                let read = match self.file.read(&mut buf[offset..]) {
-                    Ok(n) => n,
-                    Err(err) => match err.kind() {
-                        io::ErrorKind::Interrupted => {
-                            continue;
-                        }
-                        _ => return Err(err),
-                    },
-                };
-                if read == 0 {
-                    eof = true;
-                    break;
-                }
-                position += read as u64;
-                offset += read;
-            }
-            for i in (offset..buf.len()).rev() {
-                buf.remove(i);
-            }
-
-            self.blocks.insert(
-                sect,
-                Block {
-                    data: buf,
-                    access: self.access_count,
-                },
-            );
-            self.access_count += 1;
-            if eof {
-                break;
-            }
-        }
-
-        Ok(())
-    }
-}
-
-impl<F> Read for BufferedReadWrite<F>
-where
-    F: Read + Seek,
-{
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.load_blocks(self.cursor, buf.len() as u64)?;
+    /// The buffer must be pre-loaded in order for this to work.
+    fn read_buffered(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let mut offset = 0;
         let mut sect = self.cursor / self.block_size;
         let mut sect_index = self.cursor % self.block_size;
@@ -415,19 +116,64 @@ where
         }
 
         if self.blocks.len() > self.max_blocks {
-            self.purge_least_recently_used(self.blocks.len() - self.ideal_blocks);
+            self.purge_least_recently_used();
         }
 
         Ok(offset)
     }
-}
 
-impl<F> Write for BufferedReadWrite<F>
-where
-    F: Read + Write + Seek,
-{
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.load_blocks(self.cursor, buf.len() as u64)?;
+    fn get_next_block(&mut self) -> Result<(usize, &mut Vec<u8>), (usize, u64)> {
+        let block = self.cursor / self.block_size;
+        let offset = (self.cursor % self.block_size) as usize;
+        match get_block!(mut self, block) {
+            Some(data) => Ok((offset, data)),
+            None => Err((offset, block)),
+        }
+    }
+
+    fn get_next_block_modify(&mut self) -> Result<(usize, &mut Vec<u8>), (usize, u64)> {
+        let block = self.cursor / self.block_size;
+        let offset = (self.cursor % self.block_size) as usize;
+        match get_block!(mut self, block) {
+            Some(data) => {
+                self.modified.insert(block);
+                Ok((offset, data))
+            }
+            None => Err((offset, block)),
+        }
+    }
+
+    fn get_next_modified_block(&self) -> Option<u64> {
+        self.modified.first().copied()
+    }
+
+    fn iter_blocks(&self, position: u64, len: u64) -> Range<u64> {
+        let end = position + len;
+        let block = position / self.block_size;
+        let end_block = (end + self.block_size - 1) / self.block_size;
+        let num_blocks = end_block - block;
+
+        block..block + num_blocks
+    }
+
+    fn to_load(&self, position: u64, len: u64) -> Vec<u64> {
+        let mut to_load = Vec::new();
+
+        for sect in self.iter_blocks(position, len) {
+            if !self.blocks.contains_key(&sect) {
+                to_load.push(sect);
+            }
+        }
+
+        to_load
+    }
+
+    /// Write to the internal buffer
+    ///
+    /// Any pre-existing blocks must already be loaded for this to work.
+    ///
+    /// No writes to the disk will occur
+    fn write(&mut self, buf: &[u8]) -> usize {
         let mut offset = 0;
         let mut sect = self.cursor / self.block_size;
         let mut sect_index = self.cursor % self.block_size;
@@ -503,7 +249,313 @@ where
             sect_index = 0;
         }
 
-        if self.blocks.len() > self.max_blocks {
+        offset
+    }
+
+    fn take_modified(&mut self) -> Vec<u64> {
+        let mut modified: Vec<_> = mem::take(&mut self.modified).into_iter().collect();
+        modified.sort_unstable();
+        modified
+    }
+
+    fn get_block_mut(&mut self, block: u64) -> Option<&mut Vec<u8>> {
+        get_block!(mut self, block)
+    }
+
+    fn is_full(&self) -> bool {
+        self.blocks.len() > self.max_blocks
+    }
+
+    fn insert(&mut self, block: u64, data: Vec<u8>) {
+        self.blocks.insert(
+            block,
+            Block {
+                data,
+                access: self.access_count,
+            },
+        );
+        self.access_count += 1;
+    }
+
+    #[inline]
+    fn mark_modified(&mut self, block: u64) {
+        self.modified.insert(block);
+    }
+
+    #[inline]
+    fn mark_clean(&mut self, block: u64) {
+        self.modified.remove(&block);
+    }
+}
+
+/// A wrapper for files which holds a buffer for the file.
+///
+/// This buffer can hold the entire file in memory and has an option to limit
+/// how much data is stored in memory (the default limit is 1GiB).
+///
+/// Reads and writes are performed in blocks (the default block size is 512
+/// bytes).
+///
+/// This struct is designed to work with simultaneous read/write operations.
+///
+/// No writes occur to the underlying file until either flush is called, or the
+/// cache limit has been met.
+pub struct FileBuffer<F> {
+    buffer: Buffer,
+    file: F,
+}
+
+/// Builder for [FileBuffer].
+pub struct FileBufferBuilder {
+    block_size: Option<u64>,
+    max_blocks: Option<usize>,
+    ideal_blocks: Option<usize>,
+    max_cache: Option<u64>,
+    ideal_cache: Option<u64>,
+}
+
+impl FileBufferBuilder {
+    pub fn new() -> Self {
+        FileBufferBuilder {
+            block_size: None,
+            max_blocks: None,
+            max_cache: None,
+            ideal_cache: None,
+            ideal_blocks: None,
+        }
+    }
+
+    /// Set the number of bytes in a block.
+    ///
+    /// The default is 512 bytes.
+    pub fn with_block_size(mut self, block_size: u64) -> Self {
+        self.block_size = Some(block_size);
+        self
+    }
+
+    /// The maximum number of blocks to have in the cache.
+    ///
+    /// This sets the same value as [Self::with_max_cache], but in a different
+    /// unit
+    ///
+    /// The default value is 1GiB.
+    ///
+    /// Note that during a single read, the cache may become larger than the
+    /// maximum cache for the duration of the read.
+    pub fn with_max_blocks(mut self, max_blocks: usize) -> Self {
+        self.max_blocks = Some(max_blocks);
+        self.max_cache = None;
+        self
+    }
+
+    /// The maximum number of bytes to have in the cache.
+    ///
+    /// This sets the same value as [Self::with_max_blocks], but in a different unit
+    ///
+    /// The default value is 1GiB.
+    ///
+    /// Note that during a single read, the cache may become larger than the
+    /// maximum cache for the duration of the read.
+    pub fn with_max_cache(mut self, max_cache: u64) -> Self {
+        self.max_cache = Some(max_cache);
+        self.max_blocks = None;
+        self
+    }
+
+    /// The number of blocks to reduce the cache to when the cache has filled up.
+    ///
+    /// This sets the same value as [Self::with_ideal_cache], but in a different
+    /// unit
+    ///
+    /// The default value is `max_cache - (1MiB, 1KiB, or max_cache / 5
+    /// /* Which ever is the largest value smaller than max_cache*/)`.
+    pub fn with_ideal_blocks(mut self, max_blocks: usize) -> Self {
+        self.ideal_blocks = Some(max_blocks);
+        self.ideal_cache = None;
+        self
+    }
+
+    /// The number of bytes to reduce the cache to when the cache has filled up.
+    ///
+    /// This sets the same value as [Self::with_ideal_blocks], but in a
+    /// different unit
+    ///
+    /// The default value is `max_cache - (1MiB, 1KiB, or max_cache / 5
+    /// /* Which ever is the largest value smaller than max_cache*/)`.
+    pub fn with_ideal_cache(mut self, max_cache: u64) -> Self {
+        self.ideal_cache = Some(max_cache);
+        self.ideal_blocks = None;
+        self
+    }
+
+    fn build(self) -> Buffer {
+        let block_size = self.block_size.unwrap_or(512);
+        let max_blocks = self
+            .max_blocks
+            .unwrap_or_else(|| (self.max_cache.unwrap_or(1_073_741_824) / block_size) as usize);
+        let ideal_blocks = self
+            .ideal_blocks
+            .or_else(|| self.ideal_cache.map(|cache| (cache / block_size) as usize))
+            .unwrap_or_else(|| {
+                let mut blocks = (1_048_576 / block_size) as usize;
+                if blocks > max_blocks {
+                    blocks = (1024 / block_size) as usize;
+                }
+                if blocks > max_blocks {
+                    blocks = max_blocks / 5;
+                }
+
+                max_blocks - blocks
+            });
+        Buffer {
+            blocks: HashMap::new(),
+            modified: BTreeSet::new(),
+            cursor: 0,
+            block_size,
+            max_blocks,
+            ideal_blocks,
+            access_count: 0,
+        }
+    }
+
+    /// Create the FileBuffer object
+    pub fn build_sync<F>(self, f: F) -> FileBuffer<F> {
+        let buffer = self.build();
+
+        FileBuffer { file: f, buffer }
+    }
+
+    pub fn build_async<F>(self, f: F) -> FileBufferAsync<F> {
+        let buffer = self.build();
+
+        FileBufferAsync {
+            file: f,
+            buffer,
+            cursor: None,
+            state: AsyncFileBufState::default(),
+        }
+    }
+}
+
+impl<F> FileBuffer<F>
+where
+    F: Write + Seek,
+{
+    fn flush_blocks(&mut self) -> io::Result<()> {
+        let modified = self.buffer.take_modified();
+
+        let mut position = match modified.first() {
+            Some(sect) => self
+                .file
+                .seek(SeekFrom::Start(sect * self.buffer.block_size))?,
+            None => self.file.seek(SeekFrom::Current(0))?,
+        };
+        let block_size = self.buffer.block_size;
+
+        for block in modified {
+            let buf = match self.buffer.get_block_mut(block) {
+                Some(b) => b,
+                None => continue,
+            };
+            let pos = block * block_size;
+            if position != pos {
+                self.file.seek(SeekFrom::Start(pos))?;
+                position = pos;
+            }
+
+            self.file.write_all(buf.as_slice())?;
+            position += buf.len() as u64;
+        }
+        self.file.flush()?;
+
+        if self.buffer.is_full() {
+            self.buffer.purge_least_recently_used();
+        }
+
+        Ok(())
+    }
+
+    /// Clear the cache
+    ///
+    /// If there are any modified changes, they will be written to disk before
+    /// clearing the cache.
+    pub fn clear_cache(&mut self) -> io::Result<()> {
+        self.flush_blocks()?;
+        self.buffer.blocks.clear();
+        Ok(())
+    }
+}
+
+impl<F> FileBuffer<F>
+where
+    F: Read + Seek,
+{
+    fn load_blocks(&mut self, position: u64, len: u64) -> io::Result<()> {
+        let to_load = self.buffer.to_load(position, len);
+
+        let mut position = self.file.seek(SeekFrom::Current(0))?;
+        for sect in to_load {
+            let pos = sect * self.buffer.block_size;
+            if position != pos {
+                self.file.seek(SeekFrom::Start(pos))?;
+                position = pos;
+            }
+            let mut buf = vec![0u8; self.buffer.block_size as usize];
+            let mut offset = 0;
+            let mut eof = false;
+
+            while offset < buf.len() {
+                let read = match self.file.read(&mut buf[offset..]) {
+                    Ok(n) => n,
+                    Err(err) => match err.kind() {
+                        io::ErrorKind::Interrupted => {
+                            continue;
+                        }
+                        _ => return Err(err),
+                    },
+                };
+                if read == 0 {
+                    eof = true;
+                    break;
+                }
+                position += read as u64;
+                offset += read;
+            }
+            for i in (offset..buf.len()).rev() {
+                buf.remove(i);
+            }
+
+            self.buffer.insert(sect, buf);
+
+            if eof {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl<F> Read for FileBuffer<F>
+where
+    F: Read + Seek,
+{
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.load_blocks(self.buffer.cursor, buf.len() as u64)?;
+        self.buffer.read_buffered(buf)
+    }
+}
+
+impl<F> Write for FileBuffer<F>
+where
+    F: Read + Write + Seek,
+{
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.load_blocks(self.buffer.cursor, buf.len() as u64)?;
+
+        let offset = self.buffer.write(buf);
+
+        if self.buffer.is_full() {
             self.flush_blocks()?;
         }
 
@@ -515,18 +567,18 @@ where
     }
 }
 
-impl<F> Seek for BufferedReadWrite<F>
+impl<F> Seek for FileBuffer<F>
 where
     F: Seek,
 {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         match pos {
-            SeekFrom::Start(p) => self.cursor = p,
+            SeekFrom::Start(p) => self.buffer.cursor = p,
             SeekFrom::End(_) => {
-                self.cursor = self.file.seek(pos)?;
+                self.buffer.cursor = self.file.seek(pos)?;
             }
             SeekFrom::Current(o) => {
-                self.cursor = self.cursor.checked_add_signed(o).ok_or_else(|| {
+                self.buffer.cursor = self.buffer.cursor.checked_add_signed(o).ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidInput,
                         "Cannot seek to a negative position",
@@ -534,7 +586,490 @@ where
                 })?
             }
         }
-        Ok(self.cursor)
+        Ok(self.buffer.cursor)
+    }
+}
+
+#[derive(EnumAsInner)]
+enum AsyncFileBufState {
+    Normal,
+    StartSeek(SeekFrom),
+    Seeking,
+    Reading {
+        block: u64,
+        buf: Vec<u8>,
+        read: usize,
+    },
+    Writing {
+        block: u64,
+        buf: Vec<u8>,
+        written: usize,
+    },
+    Closing,
+}
+
+impl Default for AsyncFileBufState {
+    fn default() -> Self {
+        Self::Normal
+    }
+}
+
+#[pin_project]
+pub struct FileBufferAsync<F> {
+    buffer: Buffer,
+    #[pin]
+    file: F,
+    cursor: Option<u64>,
+    state: AsyncFileBufState,
+}
+impl<F: AsyncRead + AsyncSeek> FileBufferAsync<F> {
+    fn internal_poll_read_block(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        block: u64,
+    ) -> Poll<io::Result<()>> {
+        let state = mem::take(self.as_mut().project().state);
+        let block_size = self.buffer.block_size;
+        match state {
+            AsyncFileBufState::Normal => {
+                if self
+                    .as_mut()
+                    .internal_cursor_try_seek(cx, SeekFrom::Start(block * block_size))?
+                    .is_pending()
+                {
+                    return Poll::Pending;
+                }
+
+                let me = self.as_mut().project();
+                *me.state = AsyncFileBufState::Reading {
+                    block,
+                    buf: vec![0u8; block_size as usize],
+                    read: 0,
+                };
+                self.internal_poll_read_block(cx, block)
+            }
+            AsyncFileBufState::Reading {
+                block,
+                mut buf,
+                read,
+            } => {
+                let me = self.as_mut().project();
+                debug_assert_eq!(*me.cursor, Some(block * block_size + read as u64));
+
+                let mut b = ReadBuf::new(buf.as_mut_slice());
+                b.set_filled(read);
+                if me.file.poll_read(cx, &mut b)?.is_pending() {
+                    return Poll::Pending;
+                }
+                let read = b.filled().len();
+                *me.cursor = Some(block * me.buffer.block_size + read as u64);
+                if b.remaining() == 0 {
+                    me.buffer.insert(block, buf);
+                    return Poll::Ready(Ok(()));
+                }
+                *me.state = AsyncFileBufState::Reading { block, buf, read };
+                self.internal_poll_read_block(cx, block)
+            }
+            AsyncFileBufState::Writing { .. } => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "In a Writing State",
+            ))),
+            AsyncFileBufState::Closing => {
+                Poll::Ready(Err(io::Error::new(io::ErrorKind::InvalidData, "Closed")))
+            }
+            state => {
+                let me = self.as_mut().project();
+                *me.state = state;
+
+                let poll = self.as_mut().internal_cursor_poll_complete(cx)?;
+                if poll.is_ready() {
+                    return self.internal_poll_read_block(cx, block);
+                }
+                Poll::Pending
+            }
+        }
+    }
+}
+
+impl<F: AsyncRead + AsyncSeek> AsyncRead for FileBufferAsync<F> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        while buf.remaining() > 0 {
+            let me = self.as_mut().project();
+            match me.buffer.get_next_block() {
+                Ok((offset, block)) => {
+                    let block = &block[offset..];
+                    let to_read = block.len().min(buf.remaining());
+                    buf.put_slice(&block[..to_read]);
+                    me.buffer.cursor += to_read as u64;
+                    continue;
+                }
+                Err((_offset, block)) => {
+                    if self
+                        .as_mut()
+                        .internal_poll_read_block(cx, block)?
+                        .is_pending()
+                    {
+                        return Poll::Pending;
+                    }
+                }
+            }
+        }
+
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl<F: AsyncSeek> FileBufferAsync<F> {
+    fn internal_cursor_try_seek(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        position: SeekFrom,
+    ) -> Poll<io::Result<u64>> {
+        if self.state.is_normal() {
+            self.as_mut().internal_cursor_start_seek(position)?;
+        }
+        self.internal_cursor_poll_complete(cx)
+    }
+
+    fn internal_cursor_start_seek(self: Pin<&mut Self>, position: SeekFrom) -> io::Result<()> {
+        let me = self.project();
+        *me.state = AsyncFileBufState::StartSeek(position);
+        Ok(())
+    }
+
+    fn internal_cursor_poll_complete(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<io::Result<u64>> {
+        let state = mem::take(self.as_mut().project().state);
+        match state {
+            AsyncFileBufState::Normal => Poll::Ready(Ok(0)),
+            AsyncFileBufState::StartSeek(seek) => match seek {
+                SeekFrom::Start(pos) => {
+                    let me = self.as_mut().project();
+                    if let Some(actual) = me.cursor {
+                        if *actual == pos {
+                            return Poll::Ready(Ok(*actual));
+                        }
+                    }
+                    me.file.start_seek(SeekFrom::Start(pos))?;
+                    let me = self.as_mut().project();
+                    let poll = me.file.poll_complete(cx)?;
+                    if let Poll::Ready(pos) = poll {
+                        *me.cursor = Some(pos);
+                        return Poll::Ready(Ok(pos));
+                    }
+                    *me.state = AsyncFileBufState::Seeking;
+                    Poll::Pending
+                }
+                seek => {
+                    let me = self.as_mut().project();
+                    me.file.start_seek(seek)?;
+                    let me = self.as_mut().project();
+                    let poll = me.file.poll_complete(cx)?;
+                    if let Poll::Ready(pos) = poll {
+                        *me.cursor = Some(pos);
+                        return Poll::Ready(Ok(pos));
+                    }
+                    *me.state = AsyncFileBufState::Seeking;
+                    Poll::Pending
+                }
+            },
+            AsyncFileBufState::Seeking => {
+                let me = self.as_mut().project();
+                let poll = me.file.poll_complete(cx)?;
+                if let Poll::Ready(pos) = poll {
+                    *me.cursor = Some(pos);
+                    return Poll::Ready(Ok(pos));
+                }
+                *me.state = AsyncFileBufState::Seeking;
+                Poll::Pending
+            }
+            AsyncFileBufState::Reading { .. } => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "In a Reading State",
+            ))),
+            AsyncFileBufState::Writing { .. } => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "In a Writing State",
+            ))),
+            AsyncFileBufState::Closing => {
+                Poll::Ready(Err(io::Error::new(io::ErrorKind::InvalidData, "Closed")))
+            }
+        }
+    }
+}
+
+impl<F: AsyncSeek> AsyncSeek for FileBufferAsync<F> {
+    fn start_seek(self: Pin<&mut Self>, position: SeekFrom) -> io::Result<()> {
+        let me = self.project();
+        *me.state = AsyncFileBufState::StartSeek(position);
+        Ok(())
+    }
+
+    fn poll_complete(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<u64>> {
+        let me = self.as_mut().project();
+        let state = mem::take(me.state);
+        match state {
+            AsyncFileBufState::Normal => Poll::Ready(Ok(me.buffer.cursor)),
+            AsyncFileBufState::StartSeek(SeekFrom::Start(position)) => {
+                me.buffer.cursor = position;
+                Poll::Ready(Ok(me.buffer.cursor))
+            }
+            AsyncFileBufState::StartSeek(SeekFrom::Current(offset)) => {
+                me.buffer.cursor = match me.buffer.cursor.checked_add_signed(offset) {
+                    Some(v) => v,
+                    None => {
+                        return Poll::Ready(Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "Cannot seek to a negative position",
+                        )))
+                    }
+                };
+                Poll::Ready(Ok(me.buffer.cursor))
+            }
+            AsyncFileBufState::StartSeek(seek) => {
+                me.file.start_seek(seek)?;
+                let me = self.as_mut().project();
+                let poll = me.file.poll_complete(cx)?;
+                if let Poll::Ready(pos) = poll {
+                    me.buffer.cursor = pos;
+                    *me.cursor = Some(pos);
+                    return Poll::Ready(Ok(me.buffer.cursor));
+                }
+                *me.state = AsyncFileBufState::Seeking;
+                Poll::Pending
+            }
+            AsyncFileBufState::Seeking => {
+                let poll = me.file.poll_complete(cx)?;
+                if let Poll::Ready(pos) = poll {
+                    me.buffer.cursor = pos;
+                    *me.cursor = Some(pos);
+                    return Poll::Ready(Ok(me.buffer.cursor));
+                }
+                *me.state = AsyncFileBufState::Seeking;
+                Poll::Pending
+            }
+            AsyncFileBufState::Reading { .. } => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "In a Reading State",
+            ))),
+            AsyncFileBufState::Writing { .. } => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "In a Writing State",
+            ))),
+            AsyncFileBufState::Closing => {
+                Poll::Ready(Err(io::Error::new(io::ErrorKind::InvalidData, "Closed")))
+            }
+        }
+    }
+}
+
+impl<F: AsyncWrite + AsyncSeek> FileBufferAsync<F> {
+    fn internal_start_write_block(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        block: u64,
+    ) -> Poll<io::Result<()>> {
+        let state = mem::take(self.as_mut().project().state);
+        let block_size = self.buffer.block_size;
+        match state {
+            AsyncFileBufState::Normal => {
+                if self
+                    .as_mut()
+                    .internal_cursor_try_seek(cx, SeekFrom::Start(block * block_size))?
+                    .is_pending()
+                {
+                    return Poll::Pending;
+                }
+
+                let me = self.as_mut().project();
+                let data = me.buffer.blocks.get(&block).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "Block does not exist")
+                })?;
+                *me.state = AsyncFileBufState::Writing {
+                    block,
+                    buf: data.data.clone(),
+                    written: 0,
+                };
+                self.internal_poll_write_block(cx)
+            }
+            AsyncFileBufState::Reading { .. } => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "In a Reading State",
+            ))),
+            AsyncFileBufState::Writing { .. } => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "In a Writing State",
+            ))),
+            AsyncFileBufState::Closing => {
+                Poll::Ready(Err(io::Error::new(io::ErrorKind::InvalidData, "Closed")))
+            }
+            state => {
+                let me = self.as_mut().project();
+                *me.state = state;
+
+                let poll = self.as_mut().internal_cursor_poll_complete(cx)?;
+                if poll.is_ready() {
+                    return self.internal_poll_write_block(cx);
+                }
+                Poll::Pending
+            }
+        }
+    }
+    fn internal_poll_write_block(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<io::Result<()>> {
+        let state = mem::take(self.as_mut().project().state);
+        let block_size = self.buffer.block_size;
+
+        match state {
+            AsyncFileBufState::Writing {
+                block,
+                buf,
+                written,
+            } => {
+                let me = self.as_mut().project();
+                debug_assert_eq!(*me.cursor, Some(block * block_size + written as u64));
+
+                let poll = me.file.poll_write(cx, &buf[written..])?;
+                if let Poll::Ready(w) = poll {
+                    let written = written + w;
+                    *me.cursor = Some(block * block_size + written as u64);
+                    if written == buf.len() {
+                        me.buffer.mark_clean(block);
+                        return Poll::Ready(Ok(()));
+                    }
+
+                    *me.state = AsyncFileBufState::Writing {
+                        block,
+                        buf,
+                        written,
+                    };
+                    return self.internal_poll_write_block(cx);
+                }
+                *me.state = AsyncFileBufState::Writing {
+                    block,
+                    buf,
+                    written,
+                };
+                Poll::Pending
+            }
+            _ => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "In an Invalid State",
+            ))),
+        }
+    }
+}
+
+impl<F: AsyncRead + AsyncSeek + AsyncWrite> AsyncWrite for FileBufferAsync<F> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, io::Error>> {
+        let mut written = 0;
+
+        let block_size = self.buffer.block_size as usize;
+        while written < buf.len() {
+            let me = self.as_mut().project();
+            match me.buffer.get_next_block_modify() {
+                Ok((offset, data)) => {
+                    let block = &mut data[offset..];
+                    let b = &buf[written..];
+
+                    let to_write = block.len().min(b.len());
+                    (&mut block[..to_write]).copy_from_slice(&b[..to_write]);
+                    written += to_write;
+
+                    if data.len() < block_size {
+                        let b = &buf[written..];
+                        let to_extend = (block_size - data.len()).min(b.len());
+                        data.extend_from_slice(&b[..to_extend]);
+                        me.buffer.cursor += to_extend as u64;
+                    }
+
+                    me.buffer.cursor += to_write as u64;
+
+                    continue;
+                }
+                Err((offset, block)) => {
+                    let me = self.as_mut().project();
+                    let buf = &buf[written..];
+
+                    if offset == 0 && buf.len() > block_size {
+                        // Overwrite the whole block without reading it
+                        me.buffer.insert(block, Vec::from(&buf[..block_size]));
+                        me.buffer.mark_modified(block);
+                        written += block_size;
+                        me.buffer.cursor += block_size as u64;
+                        continue;
+                    }
+
+                    // Return the number of successful bytes written if any
+                    // before making a call to the file
+                    if written > 0 {
+                        return Poll::Ready(Ok(written));
+                    }
+
+                    if self
+                        .as_mut()
+                        .internal_poll_read_block(cx, block)?
+                        .is_pending()
+                    {
+                        return Poll::Pending;
+                    }
+                    continue;
+                }
+            }
+        }
+
+        Poll::Ready(Ok(written))
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+        if self.state.is_writing() {
+            if self.as_mut().internal_poll_write_block(cx)?.is_pending() {
+                return Poll::Pending;
+            }
+        }
+        while let Some(block) = self.buffer.get_next_modified_block() {
+            if self
+                .as_mut()
+                .internal_start_write_block(cx, block)?
+                .is_pending()
+            {
+                return Poll::Pending;
+            }
+        }
+
+        let me = self.as_mut().project();
+        if me.file.poll_flush(cx)?.is_pending() {
+            return Poll::Pending;
+        }
+
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), io::Error>> {
+        if self.state.is_closing() {
+            return self.project().file.poll_shutdown(cx);
+        }
+        if self.as_mut().poll_flush(cx)?.is_pending() {
+            return Poll::Pending;
+        }
+        let me = self.project();
+        *me.state = AsyncFileBufState::Closing;
+        me.file.poll_shutdown(cx)
     }
 }
 
@@ -542,7 +1077,7 @@ where
 mod test {
     use rand::{rngs::StdRng, Rng as _, SeedableRng};
     use std::{
-        io::{Cursor, Read, Seek, Write},
+        io::{Cursor, Seek, Write},
         slice,
     };
 
@@ -562,9 +1097,9 @@ Nec ullamcorper sit amet risus nullam eget felis. Vestibulum mattis ullamcorper 
     #[test]
     fn test_read() {
         let mut cursor = Cursor::new(FILE);
-        let mut f = BufferedReadWrite::new(&mut cursor)
+        let mut f = FileBufferBuilder::new()
             .with_block_size(13)
-            .build();
+            .build_sync(&mut cursor);
 
         let mut buf = [0u8; 100];
         for i in 0..(FILE.len() / 100) {
@@ -581,9 +1116,9 @@ Nec ullamcorper sit amet risus nullam eget felis. Vestibulum mattis ullamcorper 
     #[test]
     fn test_write() {
         let mut cursor = Cursor::new(Vec::<u8>::new());
-        let mut f = BufferedReadWrite::new(&mut cursor)
+        let mut f = FileBufferBuilder::new()
             .with_block_size(13)
-            .build();
+            .build_sync(&mut cursor);
 
         let count = f.write(SHORT).unwrap();
         assert_eq!(count, SHORT.len());
@@ -600,9 +1135,9 @@ Nec ullamcorper sit amet risus nullam eget felis. Vestibulum mattis ullamcorper 
     #[test]
     fn test_replace() {
         let mut cursor = Cursor::new(Vec::from(FILE));
-        let mut f = BufferedReadWrite::new(&mut cursor)
+        let mut f = FileBufferBuilder::new()
             .with_block_size(13)
-            .build();
+            .build_sync(&mut cursor);
 
         let written = f.write(b"Hello World").unwrap();
         assert_eq!(written, 11);
@@ -619,9 +1154,9 @@ Nec ullamcorper sit amet risus nullam eget felis. Vestibulum mattis ullamcorper 
     #[test]
     fn test_append() {
         let mut cursor = Cursor::new(Vec::from(SHORT));
-        let mut f = BufferedReadWrite::new(&mut cursor)
+        let mut f = FileBufferBuilder::new()
             .with_block_size(13)
-            .build();
+            .build_sync(&mut cursor);
 
         let written = f.write(FILE).unwrap();
         assert_eq!(written, FILE.len());
@@ -638,9 +1173,9 @@ Nec ullamcorper sit amet risus nullam eget felis. Vestibulum mattis ullamcorper 
     #[test]
     fn test_replace_arbitrary() {
         let mut cursor = Cursor::new(Vec::from(FILE));
-        let mut f = BufferedReadWrite::new(&mut cursor)
+        let mut f = FileBufferBuilder::new()
             .with_block_size(13)
-            .build();
+            .build_sync(&mut cursor);
 
         f.seek(SeekFrom::Start(9)).unwrap();
         let written = f.write(b"Hello World").unwrap();
@@ -658,17 +1193,17 @@ Nec ullamcorper sit amet risus nullam eget felis. Vestibulum mattis ullamcorper 
     #[test]
     fn test_read_cache_limit() {
         let mut cursor = Cursor::new(FILE);
-        let mut f = BufferedReadWrite::new(&mut cursor)
+        let mut f = FileBufferBuilder::new()
             .with_block_size(13)
             .with_max_blocks(13)
-            .build();
+            .build_sync(&mut cursor);
 
         let mut buf = [0u8; 100];
         for i in 0..(FILE.len() / 100) {
             let count = f.read(&mut buf).unwrap();
             assert_eq!(count, 100);
             assert_eq!(buf.as_slice(), &FILE[i * 100..(i + 1) * 100]);
-            assert!(f.blocks.len() <= 13);
+            assert!(f.buffer.blocks.len() <= 13);
         }
 
         let count = f.read(&mut buf).unwrap();
@@ -679,9 +1214,9 @@ Nec ullamcorper sit amet risus nullam eget felis. Vestibulum mattis ullamcorper 
     #[test]
     fn test_read_after_end() {
         let mut cursor = Cursor::new(FILE);
-        let mut f = BufferedReadWrite::new(&mut cursor)
+        let mut f = FileBufferBuilder::new()
             .with_block_size(13)
-            .build();
+            .build_sync(&mut cursor);
 
         let mut buf = [0u8; 100];
         f.seek(SeekFrom::End(100)).unwrap();
@@ -693,10 +1228,10 @@ Nec ullamcorper sit amet risus nullam eget felis. Vestibulum mattis ullamcorper 
     fn test_random_writes() {
         let mut file = Vec::from(FILE);
         let mut cursor = Cursor::new(&mut file);
-        let mut f = BufferedReadWrite::new(&mut cursor)
+        let mut f = FileBufferBuilder::new()
             .with_block_size(13)
             .with_max_blocks(13)
-            .build();
+            .build_sync(&mut cursor);
 
         let mut rng = StdRng::from_seed(*b"Hiya World This is a random seed");
         // let mut rng = StdRng::from_entropy();
