@@ -26,9 +26,12 @@ async-channel = { version = "2", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "io-util"], optional = true }
 async-trait = { version = "0.1", optional = true }
 pin-project = "1.1.4"
+strum = { version = "0.26.1", features = ["derive"] }
 
 [dev-dependencies]
+futures = "0.3.30"
 rand = "0.8"
+tokio = { version = "1", features = ["full"] }
 # serde = "1.0"
 
 # [dev-dependencies]
@@ -36,7 +39,7 @@ rand = "0.8"
 
 [features]
 # default = ["sync"]
-default = ["async-tokio"]
+# default = ["async-tokio"]
 
 sync = ["maybe-async/is_sync"]
 
@@ -45,4 +48,4 @@ async-tokio = ["async", "dep:tokio"]
 
 
 [package.metadata.docs.rs]
-all-features = true
+features = ["async-tokio"]

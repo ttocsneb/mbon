@@ -15,7 +15,7 @@ use tokio::task::{spawn_blocking, JoinHandle};
 use std::thread::JoinHandle;
 
 use crate::{
-    buffer::{FileBuffer, FileBufferBuilder},
+    buffer::{FileBuffer, FileBufferOptions},
     concurrent::{ConcurrentEngineClient, ConcurrentEngineWrapper},
     data::{Data, PartialItem},
     errors::{MbonError, MbonResult},
@@ -142,7 +142,7 @@ where
     /// Create a new engine from a file
     pub fn new(file: F) -> Self {
         Self {
-            file: Self::new_file(FileBufferBuilder::new().build_sync(file)),
+            file: Self::new_file(FileBufferOptions::new().build(file)),
         }
     }
 
