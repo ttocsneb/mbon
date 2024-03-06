@@ -4,6 +4,13 @@
 [crates-io]: https://crates.io/crates/mbon
 [Documentation]: https://docs.rs/mbon
 
+> This project is currently undergoing a rewrite. The code can be found in 
+> the [rewrite] branch. A discussion of why this is happening can be found
+> in [#1].
+
+[rewrite]: https://github.com/ttocsneb/mbon/tree/rewrite
+[#1]: https://github.com/ttocsneb/mbon/issues/1
+
 # Marked Binary Object Notation
 
 mbon is a binary notation that is inspired by the NBT format.
