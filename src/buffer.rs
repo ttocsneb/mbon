@@ -1,6 +1,6 @@
-//! Contains [FileBuffer] and [FileBufferAsync], which is a wrapper for files.
+//! A wrapper for files.
 //!
-//! [FileBuffer] and [FileBufferAsync] wraps another Reader/Writer and is able
+//! [FileBuffer] wraps another Reader/Writer and is able
 //! to hold a large buffer of the file and allows for seeks without clearing the
 //! buffer. The buffer has a limited capacity which can be set with
 //! [FileBufferOptions::with_max_cache()]/[FileBufferOptions::with_max_blocks()].
@@ -13,50 +13,36 @@
 //! This wrapper is most useful for applications where the file is seeked often
 //! and many reads/writes happen close together.
 //!
-//! In order to create a [FileBuffer] or [FileBufferAsync], the
+//! In order to create a [FileBuffer], the
 //! [FileBufferOptions] must be used.
-//!
-//! [FileBufferAsync] is only available when the feature `async-tokio` is
-//! enabled.
-//!
-//! ```no_run
-//! use mbon::buffer::FileBufferOptions;
-//! use std::fs::File;
-//!
-//! let file = File::options()
-//!     .read(true)
-//!     .write(true)
-//!     .open("my_file.mbon").unwrap();
-//!
-//! let fb = FileBufferOptions::new()
-//!     .with_block_size(4096)
-//!     .with_max_cache(1_000_000)
-//!     .build(file);
-//! ```
 use std::{
     collections::{BTreeSet, BinaryHeap, HashMap},
     mem,
 };
 
-pub mod async_buf;
-pub mod sync_buf;
+#[cfg(feature = "async-tokio")]
+mod async_buf;
+#[cfg(feature = "sync")]
+mod sync_buf;
 
+#[cfg(feature = "sync")]
 use std::io::{Read, Seek};
 
 #[cfg(feature = "async-tokio")]
 use tokio::io::{AsyncRead, AsyncSeek};
 
+#[cfg(feature = "sync")]
 pub use self::sync_buf::FileBuffer;
 
 #[cfg(feature = "async-tokio")]
-pub use self::async_buf::FileBufferAsync;
+pub use self::async_buf::FileBufferAsync as FileBuffer;
 
 struct Block {
     data: Vec<u8>,
     access: u64,
 }
 
-/// The internal buffer used by [FileBuffer] and [FileBufferAsync].
+/// The internal buffer used by [FileBuffer].
 struct Buffer {
     blocks: HashMap<u64, Block>,
     modified: BTreeSet<u64>,
@@ -172,6 +158,7 @@ impl Buffer {
 
     /// reset all blocks to be unmodified and return all that were previously
     /// marked as modified
+    #[allow(unused)]
     fn take_modified(&mut self) -> Vec<u64> {
         let mut modified: Vec<_> = mem::take(&mut self.modified).into_iter().collect();
         modified.sort_unstable();
@@ -179,6 +166,7 @@ impl Buffer {
     }
 
     /// Get the data from a block id.
+    #[allow(unused)]
     fn get_block_mut(&mut self, block: u64) -> Option<&mut Vec<u8>> {
         get_block!(mut self, block)
     }
@@ -338,22 +326,23 @@ impl FileBufferOptions {
     /// Build a [FileBuffer] with a given stream.
     ///
     /// The stream must be at least a [Read] + [Seek]
+    #[cfg(feature = "sync")]
     pub fn build<F: Read + Seek>(&self, f: F) -> FileBuffer<F> {
         let buffer = self.internal_build();
 
         FileBuffer::new(buffer, f)
     }
 
-    /// Build a [FileBufferAsync] with a given async stream.
+    /// Build a [FileBuffer] with a given async stream.
     ///
     /// The stream must be at least a [AsyncRead] + [AsyncSeek]
     ///
     /// This function is only available with the feature `async-tokio` enabled.
     #[cfg(feature = "async-tokio")]
-    pub fn build_async<F: AsyncRead + AsyncSeek>(&self, f: F) -> FileBufferAsync<F> {
+    pub fn build<F: AsyncRead + AsyncSeek>(&self, f: F) -> FileBuffer<F> {
         let buffer = self.internal_build();
 
-        FileBufferAsync::new(buffer, f)
+        FileBuffer::new(buffer, f)
     }
 }
 

@@ -1,15 +1,16 @@
 use enum_as_inner::EnumAsInner;
 use maybe_async::maybe_async;
 
-use std::io::{self, Read, Seek, SeekFrom};
-
 use crate::{
     channel::{channel, ChanRecv, ChanSend},
     data::{Data, PartialItem},
     engine::{Engine, MbonParserRead},
     errors::{MbonError, MbonResult},
     marks::Mark,
+    stream::{Reader, Seeker},
 };
+
+use std::io;
 
 #[cfg(feature = "sync")]
 use std::thread::{spawn, JoinHandle};
@@ -19,24 +20,24 @@ use tokio::task::{spawn, JoinHandle};
 #[derive(EnumAsInner)]
 enum RequestE {
     ParseMark {
-        location: SeekFrom,
+        location: u64,
     },
     ParseItem {
-        location: SeekFrom,
+        location: u64,
     },
     ParseData {
         mark: Mark,
-        location: SeekFrom,
+        location: u64,
     },
     ParseItemN {
-        location: SeekFrom,
+        location: u64,
         count: Option<usize>,
         bytes: u64,
         parse_data: bool,
     },
     ParseDataN {
         mark: Mark,
-        location: SeekFrom,
+        location: u64,
         n: usize,
     },
     Close,
@@ -50,7 +51,7 @@ pub struct Request {
 pub enum Response {
     ParseMark(MbonResult<(Mark, u64)>),
     ParseItem(MbonResult<PartialItem>),
-    ParseData(MbonResult<(Data, u64)>),
+    ParseData(MbonResult<Data>),
     ParseDataN(MbonResult<Vec<Data>>),
     ParseItemN(MbonResult<Vec<PartialItem>>),
     Stopped,
@@ -109,12 +110,12 @@ impl ConcurrentEngineClient {
 
 #[maybe_async]
 impl MbonParserRead for ConcurrentEngineClient {
-    async fn parse_mark(&mut self, location: SeekFrom) -> MbonResult<(Mark, u64)> {
+    async fn parse_mark(&mut self, location: u64) -> MbonResult<(Mark, u64)> {
         let response = self.send_request(RequestE::ParseMark { location }).await?;
         Self::expect(response.into_parse_mark())
     }
 
-    async fn parse_data(&mut self, mark: &Mark, location: SeekFrom) -> MbonResult<(Data, u64)> {
+    async fn parse_data(&mut self, mark: &Mark, location: u64) -> MbonResult<Data> {
         let response = self
             .send_request(RequestE::ParseData {
                 mark: mark.to_owned(),
@@ -124,14 +125,14 @@ impl MbonParserRead for ConcurrentEngineClient {
         Self::expect(response.into_parse_data())
     }
 
-    async fn parse_item(&mut self, location: SeekFrom) -> MbonResult<PartialItem> {
+    async fn parse_item(&mut self, location: u64) -> MbonResult<PartialItem> {
         let response = self.send_request(RequestE::ParseItem { location }).await?;
         Self::expect(response.into_parse_item())
     }
 
     async fn parse_item_n(
         &mut self,
-        location: SeekFrom,
+        location: u64,
         count: Option<usize>,
         bytes: u64,
         parse_data: bool,
@@ -150,7 +151,7 @@ impl MbonParserRead for ConcurrentEngineClient {
     async fn parse_data_n(
         &mut self,
         mark: &Mark,
-        location: SeekFrom,
+        location: u64,
         n: usize,
     ) -> MbonResult<Vec<Data>> {
         let response = self
@@ -169,7 +170,7 @@ impl MbonParserRead for ConcurrentEngineClient {
 #[maybe_async]
 impl<F> ConcurrentEngineWrapper<F>
 where
-    F: Read + Seek + Send + 'static,
+    F: Reader + Seeker + Send + 'static,
 {
     pub fn new(engine: Engine<F>) -> (Self, ConcurrentEngineClient) {
         let (send, recv) = channel();

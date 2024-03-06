@@ -1,5 +1,3 @@
-#![cfg(feature = "async-tokio")]
-
 use super::Buffer;
 
 use std::io::{self, SeekFrom};
@@ -70,7 +68,7 @@ impl Default for AsyncFileBufState {
 /// let fb = FileBufferOptions::new()
 ///     .with_block_size(4096)
 ///     .with_max_cache(1_000_000)
-///     .build_async(file);
+///     .build(file);
 /// # };
 /// ```
 #[pin_project]
@@ -633,9 +631,7 @@ mod test {
             let file = lorem_ipsom();
             let file = File::open(file).await.unwrap();
 
-            let mut f = FileBufferOptions::new()
-                .with_block_size(13)
-                .build_async(file);
+            let mut f = FileBufferOptions::new().with_block_size(13).build(file);
 
             let mut buf = [0u8; 100];
             for i in 0..(lic.len() / 100) {
@@ -662,7 +658,7 @@ mod test {
 
             let mut f = FileBufferOptions::new()
                 .with_block_size(13)
-                .build_async(&mut file);
+                .build(&mut file);
 
             f.write_all(SHORT).await.unwrap();
             f.flush().await.unwrap();
@@ -687,7 +683,7 @@ mod test {
                 .unwrap();
             let mut f = FileBufferOptions::new()
                 .with_block_size(13)
-                .build_async(&mut file);
+                .build(&mut file);
 
             f.write_all(b"Hello World").await.unwrap();
             f.flush().await.unwrap();
@@ -718,7 +714,7 @@ mod test {
 
             let mut f = FileBufferOptions::new()
                 .with_block_size(13)
-                .build_async(&mut file);
+                .build(&mut file);
 
             f.write_all(lic.as_slice()).await.unwrap();
             f.flush().await.unwrap();
@@ -744,7 +740,7 @@ mod test {
 
             let mut f = FileBufferOptions::new()
                 .with_block_size(13)
-                .build_async(&mut file);
+                .build(&mut file);
 
             f.seek(SeekFrom::Start(9)).await.unwrap();
             f.write_all(b"Hello World").await.unwrap();
@@ -769,7 +765,7 @@ mod test {
             let mut f = FileBufferOptions::new()
                 .with_block_size(13)
                 .with_max_blocks(13)
-                .build_async(&mut file);
+                .build(&mut file);
 
             let mut buf = [0u8; 100];
             for i in 0..(lic.len() / 100) {
@@ -790,7 +786,7 @@ mod test {
             let mut file = File::open(file).await.unwrap();
             let mut f = FileBufferOptions::new()
                 .with_block_size(13)
-                .build_async(&mut file);
+                .build(&mut file);
 
             let mut buf = [0u8; 100];
             f.seek(SeekFrom::End(100)).await.unwrap();
@@ -813,7 +809,7 @@ mod test {
             let mut f = FileBufferOptions::new()
                 .with_block_size(13)
                 .with_max_blocks(13)
-                .build_async(&mut file);
+                .build(&mut file);
 
             let mut rng = StdRng::from_seed(*b"Hiya World This is a random seed");
             // let mut rng = StdRng::from_entropy();
