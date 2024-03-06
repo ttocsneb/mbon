@@ -35,24 +35,6 @@ impl<T> ChanSend<T> {
     pub async fn send(&self, data: T) -> Result<(), SendError<T>> {
         self.0.send(data).await
     }
-
-    /// Send a message to the receiver
-    ///
-    /// This is the same as [Self::send] when feature `sync` is set
-    #[cfg(feature = "async")]
-    #[inline]
-    pub fn send_blocking(&self, data: T) -> Result<(), SendError<T>> {
-        self.0.send_blocking(data)
-    }
-
-    /// Send a message to the receiver
-    ///
-    /// This is the same as [Self::send] when feature `sync` is set
-    #[cfg(feature = "sync")]
-    #[inline]
-    pub fn send_blocking(&self, data: T) -> Result<(), SendError<T>> {
-        self.0.send(data)
-    }
 }
 #[maybe_async]
 impl<T> ChanRecv<T> {
@@ -62,27 +44,5 @@ impl<T> ChanRecv<T> {
     #[inline]
     pub async fn recv(&self) -> Result<T, RecvError> {
         self.0.recv().await
-    }
-
-    /// Receive a message from a sender.
-    ///
-    /// This will wait until a message is ready
-    ///
-    /// This is the same as [Self::recv] when feature `sync` is set
-    #[cfg(feature = "async")]
-    #[inline]
-    pub fn recv_blocking(&self) -> Result<T, RecvError> {
-        self.0.recv_blocking()
-    }
-
-    /// Receive a message from a sender.
-    ///
-    /// This will wait until a message is ready
-    ///
-    /// This is the same as [Self::recv] when feature `sync` is set
-    #[cfg(feature = "sync")]
-    #[inline]
-    pub fn recv_blocking(&self) -> Result<T, RecvError> {
-        self.0.recv()
     }
 }

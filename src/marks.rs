@@ -1,17 +1,17 @@
 //! [Mark]
 
-use std::{
-    io,
-    io::{Read, Write},
-    ops::Deref,
-    slice,
-    sync::Arc,
-};
+use std::{io, ops::Deref, slice, sync::Arc};
 
-use byteorder::ReadBytesExt;
 use enum_as_inner::EnumAsInner;
+use maybe_async::maybe_async;
 
-use crate::errors::{MbonError, MbonResult};
+#[cfg(feature = "async")]
+use async_recursion::async_recursion;
+
+use crate::{
+    errors::{MbonError, MbonResult},
+    stream::{Reader, Writer},
+};
 
 /// Size indicator for marks
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -37,18 +37,19 @@ impl From<Size> for u64 {
     }
 }
 
+#[maybe_async]
 impl Size {
     /// Parse a size from a reader
     ///
     /// This expects a dynamically sized Size indicator from _insert link to
     /// spec_.
-    pub fn parse<R: Read>(f: &mut R) -> MbonResult<(Self, usize)> {
+    pub async fn parse<R: Reader>(f: &mut R) -> MbonResult<(Self, usize)> {
         let mut value = 0;
         let mut read = 0;
 
         let mut i = 0;
         loop {
-            let b = f.read_u8()?;
+            let b = f.read_u8().await?;
             let v = (b & 0b0111_1111) as u64;
             if i == 9 && b > 1 {
                 // 9 * 7 + 1 == 64
@@ -70,7 +71,7 @@ impl Size {
     ///
     /// This will write a dynamically sized Size indicator from _insert link to
     /// spec_.
-    pub fn write<W: Write>(&self, f: &mut W) -> io::Result<usize> {
+    pub async fn write<W: Writer>(&self, f: &mut W) -> io::Result<usize> {
         let mut value = self.0;
         let mut written = 0;
         while self.0 > 0 {
@@ -79,7 +80,7 @@ impl Size {
             if value > 0 {
                 v |= 0b1000_0000;
             }
-            f.write_all(slice::from_ref(&v))?;
+            f.write_all(slice::from_ref(&v)).await?;
             written += 1;
         }
         Ok(written)
@@ -155,6 +156,7 @@ const POINTER_ID: u8 = 0x28;
 const RC_ID: u8 = 0x2c;
 const HEAP_ID: u8 = 0x10;
 
+#[maybe_async]
 impl Mark {
     /// Get the binary id of the mark
     pub fn id(&self) -> u8 {
@@ -179,8 +181,9 @@ impl Mark {
     }
 
     /// Parse a mark from a reader
-    pub fn parse<R: Read>(f: &mut R) -> MbonResult<(Self, usize)> {
-        let id = f.read_u8()?;
+    #[cfg_attr(feature = "async", async_recursion)]
+    pub(crate) async fn parse<R: Reader>(f: &mut R) -> MbonResult<(Self, usize)> {
+        let id = f.read_u8().await?;
         let mut len = 1;
         let mark = match id & 0b1111_1100 {
             NULL_ID => Self::Null,
@@ -189,55 +192,55 @@ impl Mark {
             FLOAT_ID => Self::Float(len_b(id)),
             CHAR_ID => Self::Char(len_b(id)),
             STRING_ID => {
-                let (size, r) = Size::parse(f)?;
+                let (size, r) = Size::parse(f).await?;
                 len += r;
                 Self::String(size)
             }
             ARRAY_ID => {
-                let (val, r) = Self::parse(f)?;
+                let (val, r) = Self::parse(f).await?;
                 len += r;
-                let (size, r) = Size::parse(f)?;
+                let (size, r) = Size::parse(f).await?;
                 len += r;
                 Self::Array(Arc::new(val), size)
             }
             LIST_ID => {
-                let (size, r) = Size::parse(f)?;
+                let (size, r) = Size::parse(f).await?;
                 len += r;
                 Self::List(size)
             }
             STRUCT_ID => {
-                let (key, r) = Self::parse(f)?;
+                let (key, r) = Self::parse(f).await?;
                 len += r;
-                let (val, r) = Self::parse(f)?;
+                let (val, r) = Self::parse(f).await?;
                 len += r;
-                let (size, r) = Size::parse(f)?;
+                let (size, r) = Size::parse(f).await?;
                 len += r;
                 Self::Struct(Arc::new(key), Arc::new(val), size)
             }
             MAP_ID => {
-                let (size, r) = Size::parse(f)?;
+                let (size, r) = Size::parse(f).await?;
                 len += r;
                 Self::Map(size)
             }
             ENUM_ID => {
-                let (mark, r) = Self::parse(f)?;
+                let (mark, r) = Self::parse(f).await?;
                 len += r;
                 Self::Enum(len_b(id), Arc::new(mark))
             }
             SPACE_ID => Self::Space,
             PADDING_ID => {
-                let (size, r) = Size::parse(f)?;
+                let (size, r) = Size::parse(f).await?;
                 len += r;
                 Self::Padding(size)
             }
             POINTER_ID => Self::Pointer(len_b(id)),
             RC_ID => {
-                let (mark, r) = Self::parse(f)?;
+                let (mark, r) = Self::parse(f).await?;
                 len += r;
                 Self::Rc(len_b(id), Arc::new(mark))
             }
             HEAP_ID => {
-                let (size, r) = Size::parse(f)?;
+                let (size, r) = Size::parse(f).await?;
                 len += r;
                 Self::Heap(size)
             }
@@ -247,52 +250,45 @@ impl Mark {
     }
 
     /// Write the mark to a writer
-    pub fn write<W: Write>(&self, f: &mut W) -> io::Result<usize> {
-        f.write_all(slice::from_ref(&self.id()))?;
+    #[cfg_attr(feature = "async", async_recursion)]
+    pub(crate) async fn write<W: Writer>(&self, f: &mut W) -> io::Result<usize> {
+        f.write_all(slice::from_ref(&self.id())).await?;
         let mut written = 1;
         match self {
             Mark::String(l) => {
-                written += l.write(f)?;
+                written += l.write(f).await?;
             }
             Mark::Array(v, n) => {
-                written += v.write(f)?;
-                written += n.write(f)?;
+                written += v.write(f).await?;
+                written += n.write(f).await?;
             }
             Mark::List(l) => {
-                written += l.write(f)?;
+                written += l.write(f).await?;
             }
             Mark::Struct(k, v, n) => {
-                written += k.write(f)?;
-                written += v.write(f)?;
-                written += n.write(f)?;
+                written += k.write(f).await?;
+                written += v.write(f).await?;
+                written += n.write(f).await?;
             }
             Mark::Map(l) => {
-                written += l.write(f)?;
+                written += l.write(f).await?;
             }
             Mark::Enum(_, v) => {
-                written += v.write(f)?;
+                written += v.write(f).await?;
             }
             Mark::Padding(l) => {
-                written += l.write(f)?;
+                written += l.write(f).await?;
             }
             Mark::Rc(_, v) => {
-                written += v.write(f)?;
+                written += v.write(f).await?;
             }
             Mark::Heap(l) => {
-                written += l.write(f)?;
+                written += l.write(f).await?;
             }
             _ => {}
         }
 
         Ok(written)
-    }
-
-    /// Write the mark to a byte buffer
-    #[inline]
-    pub fn write_to_buf(&self) -> io::Result<Vec<u8>> {
-        let mut buf = Vec::new();
-        self.write(&mut buf)?;
-        Ok(buf)
     }
 
     /// Get the length of the data the mark represents
@@ -340,19 +336,22 @@ impl Mark {
     }
 }
 
+// #[cfg(feature = "sync")]
 #[cfg(test)]
 mod test {
 
     use super::*;
 
-    #[test]
-    fn test_simple_parse() {
+    #[maybe_async]
+    #[cfg_attr(feature = "sync", test)]
+    #[cfg_attr(feature = "async-tokio", tokio::test)]
+    async fn test_simple_parse() {
         let mut buf: &[u8] = &[0xc0, 0x64, 0x32];
-        let (mark, read) = Mark::parse(&mut buf).unwrap();
+        let (mark, read) = Mark::parse(&mut buf).await.unwrap();
         assert_eq!(read, 1);
         assert_eq!(mark.is_null(), true);
 
-        let (mark, read) = Mark::parse(&mut buf).unwrap();
+        let (mark, read) = Mark::parse(&mut buf).await.unwrap();
         assert_eq!(read, 1);
         assert_eq!(mark.is_unsigned(), true);
         if let Mark::Unsigned(b) = mark {
@@ -361,19 +360,23 @@ mod test {
             unreachable!();
         }
 
-        let err = Mark::parse(&mut buf).expect_err("Expected InvalidMark error");
+        let err = Mark::parse(&mut buf)
+            .await
+            .expect_err("Expected InvalidMark error");
         assert_eq!(err.is_invalid_mark(), true);
     }
 
-    #[test]
-    fn test_size_parse() {
+    #[maybe_async]
+    #[cfg_attr(feature = "sync", test)]
+    #[cfg_attr(feature = "async-tokio", tokio::test)]
+    async fn test_size_parse() {
         let mut buf: &[u8] = &[0x32, 0x80, 0x31];
 
-        let (size, read) = Size::parse(&mut buf).unwrap();
+        let (size, read) = Size::parse(&mut buf).await.unwrap();
         assert_eq!(read, 1);
         assert_eq!(*size, 0x32);
 
-        let (size, read) = Size::parse(&mut buf).unwrap();
+        let (size, read) = Size::parse(&mut buf).await.unwrap();
         assert_eq!(read, 2);
         assert_eq!(*size, 0x1880);
     }

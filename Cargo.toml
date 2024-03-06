@@ -15,18 +15,19 @@ keywords = ["binary", "serde"]
 
 [dependencies]
 byteorder = "1"
-enum-as-inner = "0.6"
-maybe-async = { version = "0.2" }
 anyhow = "1"
 thiserror = "1"
+enum-as-inner = "0.6"
+strum = { version = "0.26", features = ["derive"] }
+maybe-async = "0.2"
+async-generic = "1.0"
 
 # Async Dependencies
-async-generic = { version = "1.0.0", optional = true }
 async-channel = { version = "2", optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "io-util"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "io-util", "fs"], optional = true }
 async-trait = { version = "0.1", optional = true }
-pin-project = "1.1.4"
-strum = { version = "0.26.1", features = ["derive"] }
+pin-project = { version = "1.1", optional = true }
+async-recursion = "1.0.5"
 
 [dev-dependencies]
 futures = "0.3.30"
@@ -43,7 +44,7 @@ tokio = { version = "1", features = ["full"] }
 
 sync = ["maybe-async/is_sync"]
 
-async = ["dep:async-channel", "dep:async-generic", "dep:async-trait"]
+async = ["dep:async-channel", "dep:async-trait", "dep:pin-project"]
 async-tokio = ["async", "dep:tokio"]
 
 

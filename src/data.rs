@@ -2,18 +2,17 @@ use enum_as_inner::EnumAsInner;
 use maybe_async::maybe_async;
 use std::{
     char::{self},
-    io::{Read, Seek, SeekFrom},
+    io::SeekFrom,
     mem,
     ops::Deref,
     sync::Arc,
 };
 
-use byteorder::{LittleEndian, ReadBytesExt};
-
 use crate::{
     engine::MbonParserRead,
     errors::{MbonError, MbonResult},
     marks::{Mark, Size},
+    stream::{Reader, Seeker},
 };
 
 macro_rules! number_type {
@@ -28,7 +27,8 @@ macro_rules! number_type {
             }
         }
         impl $name {
-            pub(crate) fn parse<R: Read>($file: &mut R) -> MbonResult<Self> {
+            #[maybe_async]
+            pub(crate) async fn parse<R: Reader>($file: &mut R) -> MbonResult<Self> {
                 let val = $read;
                 Ok(Self(val))
             }
@@ -51,21 +51,21 @@ macro_rules! char_impl {
     };
 }
 
-number_type!(U8,  u8,  f: f.read_u8()?);
-number_type!(U16, u16, f: f.read_u16::<LittleEndian>()?);
-number_type!(U32, u32, f: f.read_u32::<LittleEndian>()?);
-number_type!(U64, u64, f: f.read_u64::<LittleEndian>()?);
-number_type!(I8,  i8,  f: f.read_i8()?);
-number_type!(I16, i16, f: f.read_i16::<LittleEndian>()?);
-number_type!(I32, i32, f: f.read_i32::<LittleEndian>()?);
-number_type!(I64, i64, f: f.read_i64::<LittleEndian>()?);
-number_type!(F32, f32, f: f.read_f32::<LittleEndian>()?);
-number_type!(F64, f64, f: f.read_f64::<LittleEndian>()?);
-number_type!(C8,  u8,  f: f.read_u8()?);
+number_type!(U8,  u8,  f: f.read_u8().await?);
+number_type!(U16, u16, f: f.read_u16_le().await?);
+number_type!(U32, u32, f: f.read_u32_le().await?);
+number_type!(U64, u64, f: f.read_u64_le().await?);
+number_type!(I8,  i8,  f: f.read_i8().await?);
+number_type!(I16, i16, f: f.read_i16_le().await?);
+number_type!(I32, i32, f: f.read_i32_le().await?);
+number_type!(I64, i64, f: f.read_i64_le().await?);
+number_type!(F32, f32, f: f.read_f32_le().await?);
+number_type!(F64, f64, f: f.read_f64_le().await?);
+number_type!(C8,  u8,  f: f.read_u8().await?);
 char_impl!(C8);
-number_type!(C16, u16, f: f.read_u16::<LittleEndian>()?);
+number_type!(C16, u16, f: f.read_u16_le().await?);
 char_impl!(C16);
-number_type!(C32, u32, f: f.read_u32::<LittleEndian>()?);
+number_type!(C32, u32, f: f.read_u32_le().await?);
 char_impl!(C32);
 
 #[derive(Debug, Clone)]
@@ -83,9 +83,10 @@ impl From<Str> for String {
     }
 }
 impl Str {
-    pub(crate) fn parse<R: Read>(f: &mut R, l: &Size) -> MbonResult<Self> {
+    #[maybe_async]
+    pub(crate) async fn parse<R: Reader>(f: &mut R, l: &Size) -> MbonResult<Self> {
         let mut buf = vec![0u8; **l as usize];
-        f.read_exact(buf.as_mut_slice())?;
+        f.read_exact(buf.as_mut_slice()).await?;
         let val = String::from_utf8(buf).map_err(|err| MbonError::InvalidData(err.into()))?;
         Ok(Self(val))
     }
@@ -132,7 +133,7 @@ impl List {
         let mut len = self.items.len();
 
         loop {
-            let (mark, pos) = client.parse_mark(SeekFrom::Start(location)).await?;
+            let (mark, pos) = client.parse_mark(location).await?;
             let item = PartialItem::new(mark, pos);
             location = item.location + item.mark.total_len();
             if location > self.end {
@@ -190,9 +191,7 @@ impl Array {
 
         let len = self.mark.data_len();
         let location = self.start + len * (index as u64);
-        let (data, _) = client
-            .parse_data(&self.mark, SeekFrom::Start(location))
-            .await?;
+        let data = client.parse_data(&self.mark, location).await?;
 
         self.items[index] = Some(data);
         Ok(self.items[index].as_mut())
@@ -255,9 +254,7 @@ impl Struct {
             offset += key_len;
         }
 
-        let (data, _) = client
-            .parse_data(mark, SeekFrom::Start(self.start + offset))
-            .await?;
+        let data = client.parse_data(mark, self.start + offset).await?;
 
         let _ = mem::replace(val, Some(data));
 
@@ -285,10 +282,10 @@ impl Struct {
     pub async fn fetch_by_key<'t, E: MbonParserRead>(
         &'t mut self,
         client: &mut E,
-        key: &Data,
+        _key: &Data,
     ) -> MbonResult<Option<&'t mut Data>> {
         for i in 0..self.items.len() {
-            if let Some(k) = self.fetch_key(client, i).await? {
+            if let Some(_k) = self.fetch_key(client, i).await? {
                 todo!()
             }
         }
@@ -319,41 +316,47 @@ pub enum Data {
     Struct(Struct),
 }
 
+#[maybe_async]
 impl Data {
-    pub(crate) fn parse<R: Read + Seek>(f: &mut R, mark: &Mark) -> MbonResult<Self> {
+    pub(crate) async fn parse<R: Reader + Seeker>(f: &mut R, mark: &Mark) -> MbonResult<Self> {
         Ok(match mark {
             Mark::Null => Self::Null,
             Mark::Unsigned(b) => match b {
-                1 => Self::U8(U8::parse(f)?),
-                2 => Self::U16(U16::parse(f)?),
-                4 => Self::U32(U32::parse(f)?),
-                8 => Self::U64(U64::parse(f)?),
+                1 => Self::U8(U8::parse(f).await?),
+                2 => Self::U16(U16::parse(f).await?),
+                4 => Self::U32(U32::parse(f).await?),
+                8 => Self::U64(U64::parse(f).await?),
                 _ => return Err(MbonError::InvalidMark),
             },
             Mark::Signed(b) => match b {
-                1 => Self::I8(I8::parse(f)?),
-                2 => Self::I16(I16::parse(f)?),
-                4 => Self::I32(I32::parse(f)?),
-                8 => Self::I64(I64::parse(f)?),
+                1 => Self::I8(I8::parse(f).await?),
+                2 => Self::I16(I16::parse(f).await?),
+                4 => Self::I32(I32::parse(f).await?),
+                8 => Self::I64(I64::parse(f).await?),
                 _ => return Err(MbonError::InvalidMark),
             },
             Mark::Float(b) => match b {
-                4 => Self::F32(F32::parse(f)?),
-                8 => Self::F64(F64::parse(f)?),
+                4 => Self::F32(F32::parse(f).await?),
+                8 => Self::F64(F64::parse(f).await?),
                 _ => return Err(MbonError::InvalidMark),
             },
             Mark::Char(b) => match b {
-                1 => Self::C8(C8::parse(f)?),
-                2 => Self::C16(C16::parse(f)?),
-                4 => Self::C32(C32::parse(f)?),
+                1 => Self::C8(C8::parse(f).await?),
+                2 => Self::C16(C16::parse(f).await?),
+                4 => Self::C32(C32::parse(f).await?),
                 _ => return Err(MbonError::InvalidMark),
             },
-            Mark::String(l) => Self::String(Str::parse(f, l)?),
-            Mark::Array(v, n) => Self::Array(Array::new(f.stream_position()?, v.clone(), &n)?),
-            Mark::List(l) => Self::List(List::new(f.stream_position()?, l)?),
-            Mark::Struct(k, v, n) => {
-                Self::Struct(Struct::new(f.stream_position()?, k.clone(), v.clone(), &n)?)
+            Mark::String(l) => Self::String(Str::parse(f, l).await?),
+            Mark::Array(v, n) => {
+                Self::Array(Array::new(f.stream_position().await?, v.clone(), &n)?)
             }
+            Mark::List(l) => Self::List(List::new(f.stream_position().await?, l)?),
+            Mark::Struct(k, v, n) => Self::Struct(Struct::new(
+                f.stream_position().await?,
+                k.clone(),
+                v.clone(),
+                &n,
+            )?),
             Mark::Map(_) => todo!(),
             Mark::Enum(_, _) => todo!(),
             Mark::Space => todo!(),
@@ -395,6 +398,7 @@ pub struct PartialItem {
     location: u64,
 }
 
+#[maybe_async]
 impl PartialItem {
     pub fn new(mark: Mark, location: u64) -> Self {
         Self {
@@ -404,9 +408,9 @@ impl PartialItem {
         }
     }
 
-    pub(crate) fn parse_data<R: Read + Seek>(&mut self, f: &mut R) -> MbonResult<()> {
-        f.seek(SeekFrom::Start(self.location))?;
-        let data = Data::parse(f, &self.mark)?;
+    pub(crate) async fn parse_data<R: Reader + Seeker>(&mut self, f: &mut R) -> MbonResult<()> {
+        f.seek(SeekFrom::Start(self.location)).await?;
+        let data = Data::parse(f, &self.mark).await?;
         self.data = Some(data);
         Ok(())
     }
