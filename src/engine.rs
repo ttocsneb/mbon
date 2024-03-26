@@ -37,15 +37,8 @@ pub trait MbonParserRead {
     async fn parse_mark(&mut self, location: u64) -> MbonResult<(Mark, u64)>;
     async fn parse_data(&mut self, mark: &Mark, location: u64) -> MbonResult<Data>;
     async fn parse_item(&mut self, location: u64) -> MbonResult<PartialItem>;
-    async fn parse_item_n(
-        &mut self,
-        location: u64,
-        count: Option<usize>,
-        bytes: u64,
-        parse_data: bool,
-    ) -> MbonResult<Vec<PartialItem>>;
-    async fn parse_data_n(&mut self, mark: &Mark, location: u64, n: usize)
-        -> MbonResult<Vec<Data>>;
+    async fn parse_data_full(&mut self, mark: &Mark, location: u64) -> MbonResult<Data>;
+    async fn parse_item_full(&mut self, location: u64) -> MbonResult<PartialItem>;
 }
 
 /// Mbon Engine
@@ -142,59 +135,21 @@ where
         Ok(item)
     }
 
-    async fn parse_item_n(
-        &mut self,
-        location: u64,
-        count: Option<usize>,
-        bytes: u64,
-        parse_data: bool,
-    ) -> MbonResult<Vec<PartialItem>> {
+    async fn parse_data_full(&mut self, mark: &Mark, location: u64) -> MbonResult<Data> {
         let file = &mut self.file;
 
-        let mut items = Vec::new();
-        let mut read = 0;
-        let mut pos = file.seek(SeekFrom::Start(location)).await?;
-
-        while count.map(|count| items.len() < count).unwrap_or(true) && read < bytes {
-            let (m, _) = Mark::parse(&mut *file).await?;
-            let mut item = PartialItem::new(m, pos);
-            if parse_data {
-                item.parse_data(&mut *file).await?;
-            }
-
-            let len = item.mark.total_len();
-            read += len;
-
-            pos = file.seek(SeekFrom::Start(pos + len)).await?;
-            items.push(item);
-        }
-
-        if read > bytes {
-            return Err(MbonError::InvalidMark);
-        }
-
-        Ok(items)
+        file.seek(SeekFrom::Start(location)).await?;
+        let data = Data::parse_full(&mut *file, mark).await?;
+        Ok(data)
     }
 
-    async fn parse_data_n(
-        &mut self,
-        mark: &Mark,
-        location: u64,
-        n: usize,
-    ) -> MbonResult<Vec<Data>> {
+    async fn parse_item_full(&mut self, location: u64) -> MbonResult<PartialItem> {
         let file = &mut self.file;
 
-        let mut items = Vec::new();
-        let start = file.seek(SeekFrom::Start(location)).await?;
-
-        let len = mark.data_len();
-
-        for i in 0..n {
-            file.seek(SeekFrom::Start(start + (len * i as u64))).await?;
-            let data = Data::parse(&mut *file, mark).await?;
-            items.push(data);
-        }
-
-        Ok(items)
+        file.seek(SeekFrom::Start(location)).await?;
+        let (m, _) = Mark::parse(&mut *file).await?;
+        let mut item = PartialItem::new(m, location);
+        item.parse_data_full(&mut *file).await?;
+        Ok(item)
     }
 }

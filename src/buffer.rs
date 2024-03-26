@@ -205,7 +205,7 @@ impl Buffer {
     }
 }
 
-/// Set options for a [FileBuffer] or [FileBufferAsync].
+/// Set options for a [FileBuffer].
 ///
 /// There are three options that can be set.
 ///

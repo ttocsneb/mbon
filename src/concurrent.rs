@@ -19,27 +19,11 @@ use tokio::task::{spawn, JoinHandle};
 
 #[derive(EnumAsInner)]
 enum RequestE {
-    ParseMark {
-        location: u64,
-    },
-    ParseItem {
-        location: u64,
-    },
-    ParseData {
-        mark: Mark,
-        location: u64,
-    },
-    ParseItemN {
-        location: u64,
-        count: Option<usize>,
-        bytes: u64,
-        parse_data: bool,
-    },
-    ParseDataN {
-        mark: Mark,
-        location: u64,
-        n: usize,
-    },
+    ParseMark { location: u64 },
+    ParseItem { location: u64 },
+    ParseData { mark: Mark, location: u64 },
+    ParseItemFull { location: u64 },
+    ParseDataFull { mark: Mark, location: u64 },
     Close,
 }
 pub struct Request {
@@ -52,8 +36,8 @@ pub enum Response {
     ParseMark(MbonResult<(Mark, u64)>),
     ParseItem(MbonResult<PartialItem>),
     ParseData(MbonResult<Data>),
-    ParseDataN(MbonResult<Vec<Data>>),
-    ParseItemN(MbonResult<Vec<PartialItem>>),
+    ParseDataFull(MbonResult<Data>),
+    ParseItemFull(MbonResult<PartialItem>),
     Stopped,
 }
 
@@ -130,38 +114,21 @@ impl MbonParserRead for ConcurrentEngineClient {
         Self::expect(response.into_parse_item())
     }
 
-    async fn parse_item_n(
-        &mut self,
-        location: u64,
-        count: Option<usize>,
-        bytes: u64,
-        parse_data: bool,
-    ) -> MbonResult<Vec<PartialItem>> {
+    async fn parse_data_full(&mut self, mark: &Mark, location: u64) -> MbonResult<Data> {
         let response = self
-            .send_request(RequestE::ParseItemN {
-                location,
-                count,
-                bytes,
-                parse_data,
-            })
-            .await?;
-        Self::expect(response.into_parse_item_n())
-    }
-
-    async fn parse_data_n(
-        &mut self,
-        mark: &Mark,
-        location: u64,
-        n: usize,
-    ) -> MbonResult<Vec<Data>> {
-        let response = self
-            .send_request(RequestE::ParseDataN {
+            .send_request(RequestE::ParseDataFull {
                 mark: mark.to_owned(),
                 location,
-                n,
             })
             .await?;
-        Self::expect(response.into_parse_data_n())
+        Self::expect(response.into_parse_data_full())
+    }
+
+    async fn parse_item_full(&mut self, location: u64) -> MbonResult<PartialItem> {
+        let response = self
+            .send_request(RequestE::ParseItemFull { location })
+            .await?;
+        Self::expect(response.into_parse_item_full())
     }
 }
 
@@ -207,19 +174,12 @@ where
             RequestE::ParseData { mark, location } => {
                 Response::ParseData(self.engine.parse_data(&mark, location).await)
             }
-            RequestE::ParseDataN { mark, location, n } => {
-                Response::ParseDataN(self.engine.parse_data_n(&mark, location, n).await)
+            RequestE::ParseItemFull { location } => {
+                Response::ParseItemFull(self.engine.parse_item_full(location).await)
             }
-            RequestE::ParseItemN {
-                location,
-                count,
-                bytes,
-                parse_data,
-            } => Response::ParseItemN(
-                self.engine
-                    .parse_item_n(location, count, bytes, parse_data)
-                    .await,
-            ),
+            RequestE::ParseDataFull { mark, location } => {
+                Response::ParseDataFull(self.engine.parse_data_full(&mark, location).await)
+            }
             RequestE::Close => {
                 action.response.send(Response::Stopped).await.ok();
                 return true;

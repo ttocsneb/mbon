@@ -4,7 +4,7 @@
 [crates-io]: https://crates.io/crates/mbon
 [Documentation]: https://mbon.benjaminja.info
 
-# Mbon 0.3.0 Nightly
+# Mbon 0.3.0+Nightly
 
 Mbon is currently undergoing a major rewrite. 
 
