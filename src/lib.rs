@@ -1,4 +1,4 @@
-//! # Marked Binary Object Notation
+//! A library for the MBON file type
 //!
 //! mbon is a binary notation that is inspired by the NBT format.
 //!
@@ -8,162 +8,61 @@
 //! differenciate between types.
 //!
 //! This format is self-describing which means that it is able to know if the
-//! data is not formatted correctly or a different type was stored than what
-//! was expected. Another feature of the self-describing nature of the format
-//! is that you can skip values in the data without the need to parse the complete
+//! data is not formatted correctly or a different type was stored than what was
+//! expected. Another feature of the self-describing nature of the format is
+//! that you can skip values in the data without the need to parse the complete
 //! item, e.g. A 1GB value can be easily skipped by only reading the mark.
 //!
-//! ## Usage
+//! # Usage
 //!
-//! ### Dumping
+//! mbon is primarily used with the [crate::engine::Engine] which allows for
+//! reading and writing data with a stream. The engine is capable of
+//! reading/writing whole items or sections of items.
 //!
-//! You can dump binary data using the [dumper::Dumper] struct. You can
-//! write values directly or use serde's serialize to write more complex data.
+//! # Features
 //!
-//! ```
-//! use mbon::dumper::Dumper;
+//! There are two primary features that mbon may be compiled with.
 //!
-//! let a = 32;
-//! let b = "Hello World";
-//! let c = b'a';
+//! * `sync` — Builds the library without any async code/dependencies
+//! * `async-tokio` — Builds the library using [tokio]'s async library.
 //!
-//! let mut dumper = Dumper::new();
-//! dumper.write_int(a).unwrap();
-//! dumper.write(&b).unwrap();
-//! dumper.write(&c).unwrap();
+//! These two features are mutually exclusive, so compiling with both `sync` and
+//! `async-tokio` will cause a compiler error.
 //!
-//! let output = dumper.writer();
-//! assert_eq!(output, b"i\x00\x00\x00\x20s\x00\x00\x00\x0bHello Worldca");
+//! ```toml
+//! [dependencies]
+//! mbon = { version = "0.3.0", features = ["async-tokio"] }
 //! ```
 //!
-//! ### Parsing
+//! These docs are written assuming that the `async-tokio` feature was set, any
+//! functions that are marked as async will not be with the `sync` feature.
 //!
-//! You can parse binary data using the [parser::Parser] struct. You can
-//! parse Value's directly, but it is recommended to use serde to parse data.
+//! # Spec
 //!
-//! ```
-//! use mbon::parser::Parser;
-//! use mbon::data::Value;
-//!
-//! let data = b"i\x00\x00\x00\x20s\x00\x00\x00\x0bHello Worldca";
-//!
-//! let mut parser = Parser::from(data);
-//!
-//! let a = parser.next_value().unwrap();
-//! let b: String = parser.next().unwrap();
-//! let c: u8 = parser.next().unwrap();
-//!
-//! if let Value::Int(a) = a {
-//!     assert_eq!(a, 32);
-//! } else {
-//!     panic!("a should have been an int");
-//! }
-//!
-//! assert_eq!(b, "Hello World");
-//! assert_eq!(c, b'a');
-//! ```
-//!
-//! ### Embedded Objects
-//!
-//! If you are wanting to embed a predefined object inside the format, you can
-//! impl [object::ObjectDump]/[object::ObjectParse]. Keep in mind that you will
-//! need to call [`write_obj()`][write_obj]/[`next_obj()`][next_obj] to take
-//! advantage of it.
-//!
-//! [write_obj]: dumper::Dumper::write_obj
-//! [next_obj]: parser::Parser::next_obj
-//!
-//! ```
-//! use mbon::parser::Parser;
-//! use mbon::dumper::Dumper;
-//! use mbon::error::Error;
-//! use mbon::object::{ObjectDump, ObjectParse};
-//!
-//! #[derive(Debug, PartialEq, Eq)]
-//! struct Foo {
-//!     a: i32,
-//!     b: String,
-//!     c: char,
-//! }
-//!
-//! impl ObjectDump for Foo {
-//!     type Error = Error;
-//!
-//!     fn dump_object(&self) -> Result<Vec<u8>, Self::Error> {
-//!         let mut dumper = Dumper::new();
-//!
-//!         dumper.write(&self.a)?;
-//!         dumper.write(&self.b)?;
-//!         dumper.write(&self.c)?;
-//!
-//!         Ok(dumper.writer())
-//!     }
-//! }
-//!
-//! impl ObjectParse for Foo {
-//!     type Error = Error;
-//!
-//!     fn parse_object(object: &[u8]) -> Result<Self, Self::Error> {
-//!         let mut parser = Parser::from(object);
-//!
-//!         let a = parser.next()?;
-//!         let b = parser.next()?;
-//!         let c = parser.next()?;
-//!
-//!         Ok(Self { a, b, c })
-//!     }
-//! }
-//!
-//! let foo = Foo { a: 32, b: "Hello World".to_owned(), c: '🫠' };
-//! let mut dumper = Dumper::new();
-//!
-//! dumper.write_obj(&foo).unwrap();
-//!
-//! let buf = dumper.writer();
-//! let mut parser = Parser::from(&buf);
-//!
-//! let new_foo: Foo = parser.next_obj().unwrap();
-//!
-//! assert_eq!(foo, new_foo);
-//! ```
-//!
-//! ### Async Implementations
-//!
-//! If you want to parse data asynchronously, you may want to use the provided
-//! wrappers: [async_wrapper::AsyncDumper], [async_wrapper::AsyncParser].
-//!
-//! > You need to enable the feature `async` to use these implementations.
-//!
-//! ```
-//! # #[cfg(feature = "async")] {
-//! # futures::executor::block_on(async {
-//! use futures::io::{AsyncWriteExt, Cursor};
-//!
-//! use mbon::async_wrapper::{AsyncDumper, AsyncParser};
-//!
-//! let writer = Cursor::new(vec![0u8; 5]);
-//! let mut dumper = AsyncDumper::from(writer);
-//!
-//! dumper.write(&15u32)?;
-//! dumper.flush().await?;
-//!
-//! let mut reader = dumper.writer();
-//! reader.set_position(0);
-//!
-//! let mut parser = AsyncParser::from(reader);
-//!
-//! let val: u32 = parser.next().await?;
-//!
-//! assert_eq!(val, 15);
-//! # Ok::<(), Box<dyn std::error::Error>>(()) }).unwrap();
-//! # }
-//! ```
+//! A specification of the mbon file format can be found at
+//! [github.com/ttocsneb/mbon/blob/rewrite/spec/)](https://github.com/ttocsneb/mbon/blob/rewrite/spec/index.md).
 //!
 
-#[cfg(feature = "async")]
-pub mod async_wrapper;
+#[cfg(not(any(feature = "sync", feature = "async-tokio")))]
+compile_error!("Feature \"sync\" or \"async-tokio\" is required");
+#[cfg(all(feature = "sync", feature = "async-tokio"))]
+compile_error!("Only one of \"sync\" or \"async-tokio\" can be active at a time");
+
+#[cfg(any(feature = "sync", feature = "async-tokio"))]
+pub mod buffer;
+#[cfg(any(feature = "sync", feature = "async-tokio"))]
+pub(crate) mod channel;
+#[cfg(any(feature = "sync", feature = "async-tokio"))]
+pub mod concurrent;
+#[cfg(any(feature = "sync", feature = "async-tokio"))]
 pub mod data;
-pub mod dumper;
-pub mod error;
-pub mod object;
-pub mod parser;
+#[cfg(any(feature = "sync", feature = "async-tokio"))]
+pub mod engine;
+#[cfg(any(feature = "sync", feature = "async-tokio"))]
+pub mod errors;
+#[cfg(any(feature = "sync", feature = "async-tokio"))]
+pub mod items;
+#[cfg(any(feature = "sync", feature = "async-tokio"))]
+pub mod marks;
+#[cfg(any(feature = "sync", feature = "async-tokio"))]
+pub mod stream;
